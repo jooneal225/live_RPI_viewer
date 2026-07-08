@@ -43,7 +43,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QCheckBox, QLabel,
     QComboBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QLineEdit,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QByteArray
 
 from rpi_utils import (
     load_probe_file,
@@ -296,6 +296,24 @@ class MainWindow(QMainWindow):
         self.deque_length_spin.setValue(int(  _get('app', 'deque_length', '3')))
         self.autosave_check.setChecked(       _get('app', 'autosave',     'false').lower() == 'true')
 
+        # ---- Window geometry + splitter position ----
+        geo = _get('window', 'geometry', '')
+        if geo:
+            self.restoreGeometry(QByteArray.fromHex(geo.encode()))
+        spl = _get('window', 'splitter', '')
+        if spl:
+            self.splitter.restoreState(QByteArray.fromHex(spl.encode()))
+
+        # Line edits: keep the tooltip in sync with the (possibly truncated)
+        # text so hovering always reveals the full value. Restricted to our own
+        # fields (pyqtgraph's ImageView has many internal QLineEdits).
+        for le in (self.probe_file_edit, self.pixel_mask_file_edit,
+                   self.pv_name_edit, self.save_dir_edit, self.h5_file_edit,
+                   self.loss_target_edit, self.reg1_edit, self.reg2_lo_edit,
+                   self.reg2_hi_edit):
+            le.setToolTip(le.text())
+            le.textChanged.connect(lambda text, w=le: w.setToolTip(text))
+
     def _save_settings(self):
         cfg = configparser.ConfigParser()
         cfg['paths']    = {
@@ -346,6 +364,10 @@ class MainWindow(QMainWindow):
         cfg['app']      = {
             'deque_length': str(self.deque_length_spin.value()),
             'autosave':     str(self.autosave_check.isChecked()).lower(),
+        }
+        cfg['window']   = {
+            'geometry': bytes(self.saveGeometry().toHex()).decode(),
+            'splitter': bytes(self.splitter.saveState().toHex()).decode(),
         }
 
         with open(str(_INI_FILE), 'w') as f:
@@ -636,11 +658,11 @@ class MainWindow(QMainWindow):
     def _update_pixel_info(self):
         parts = []
         if self._last_pixel_size_m is not None:
-            parts.append(f'pixel: {self._last_pixel_size_m * 1e9:.2f} nm')
+            parts.append(f'pixel size: {self._last_pixel_size_m * 1e9:.1f} nm')
         if self._mouse_rc is not None and self._last_display_img is not None:
             r, c = self._mouse_rc
-            parts.append(f'x={c}  y={r}')
-            parts.append(f'value={float(self._last_display_img[r, c]):.1f}')
+            parts.append(f'x={c} px  y={r} px')
+            parts.append(f'phase: {float(self._last_display_img[r, c]):.2f}')
         self.pixel_info_label.setText('     '.join(parts))
 
     # ------------------------------------------------------------------ #
