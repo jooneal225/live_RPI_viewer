@@ -2,13 +2,19 @@
 ProbeViewer — modal dialog to manage a library of named probe choices.
 
 Opens from the main window's "Set Probe Choice" button. The user maintains a
-named list of probe files: add with the green +, remove with the red −.
+named list of probe files:
+  +            add an entry (file picker + name prompt)
+  −            remove the selected entry
+  Rename       give the selected entry a new name
+  Change File  point the selected entry at a different file (name kept)
+
 Selecting an entry loads that file and previews |probe[0, 0]| (first OPR mode,
 first coherent mode). Accept returns the chosen (name, path); the caller then
 loads that probe and fills the probe-file / probe-name fields.
 
-The list itself is owned and persisted by the main window; this dialog edits a
-working copy and hands it back via get_choices().
+Each entry is a dict {'name', 'path', 'params'}; the RPI parameter set in
+'params' is owned by the main window and passed through this dialog untouched,
+so renaming a probe or changing its file keeps its associated parameters.
 """
 
 from pathlib import Path
@@ -29,28 +35,32 @@ class ProbeViewer(QDialog):
         """
         Parameters
         ----------
-        choices : list of (name, path) or None
-            The current named-probe library.
+        choices : list of dict or None
+            The current library; each item {'name', 'path', 'params'}.
         current_path : str or None
             Path of the currently active probe; preselected if present.
         """
         super().__init__(parent)
         self.setWindowTitle('Set Probe Choice')
-        self.resize(680, 720)
+        self.resize(680, 760)
         self.setModal(True)
 
-        # Working copy of the (name, path) library.
-        self._choices = [(str(n), str(p)) for n, p in (choices or [])]
+        # Working copy (deep enough that edits here don't touch the caller's
+        # list until it reads get_choices()); params dicts are passed through.
+        self._choices = [
+            {'name': str(c['name']), 'path': str(c['path']),
+             'params': dict(c.get('params') or {})}
+            for c in (choices or [])
+        ]
         self._sel_name = None
         self._sel_path = None
 
         self._build_ui()
         self._populate_list()
 
-        # Preselect the entry matching the currently active probe, if any.
         if current_path:
-            for i, (_n, p) in enumerate(self._choices):
-                if p == current_path:
+            for i, c in enumerate(self._choices):
+                if c['path'] == current_path:
                     self.list_widget.setCurrentRow(i)
                     break
 
@@ -61,7 +71,7 @@ class ProbeViewer(QDialog):
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
-        # Named-probe list with +/- buttons
+        # Named-probe list with add/remove/rename/change-file controls
         list_row = QHBoxLayout()
         self.list_widget = QListWidget()
         self.list_widget.setToolTip('Named probe files. Select one to preview.')
@@ -76,8 +86,15 @@ class ProbeViewer(QDialog):
                             f'font-weight: bold; font-size: 16px;')
         self.add_btn.setToolTip('Add a probe entry')
         self.del_btn.setToolTip('Remove the selected entry')
+        self.rename_btn = QPushButton('Rename')
+        self.change_file_btn = QPushButton('Change File')
+        self.rename_btn.setToolTip('Rename the selected entry')
+        self.change_file_btn.setToolTip('Point the selected entry at another file')
         btn_col.addWidget(self.add_btn)
         btn_col.addWidget(self.del_btn)
+        btn_col.addSpacing(12)
+        btn_col.addWidget(self.rename_btn)
+        btn_col.addWidget(self.change_file_btn)
         btn_col.addStretch()
         list_row.addLayout(btn_col)
         layout.addLayout(list_row)
@@ -105,19 +122,27 @@ class ProbeViewer(QDialog):
 
         self.add_btn.clicked.connect(self._on_add)
         self.del_btn.clicked.connect(self._on_del)
+        self.rename_btn.clicked.connect(self._on_rename)
+        self.change_file_btn.clicked.connect(self._on_change_file)
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         self.accept_btn.clicked.connect(self._on_accept)
         self.cancel_btn.clicked.connect(self.reject)
 
-        # Accept is enabled only when a valid entry is selected.
         self.accept_btn.setEnabled(False)
+        self._update_edit_buttons()
 
     def _populate_list(self):
         self.list_widget.clear()
-        for name, path in self._choices:
-            item = QListWidgetItem(name)
-            item.setToolTip(path)
+        for c in self._choices:
+            item = QListWidgetItem(c['name'])
+            item.setToolTip(c['path'])
             self.list_widget.addItem(item)
+
+    def _update_edit_buttons(self):
+        has = self.list_widget.currentRow() >= 0
+        self.del_btn.setEnabled(has)
+        self.rename_btn.setEnabled(has)
+        self.change_file_btn.setEnabled(has)
 
     # ------------------------------------------------------------------
     # Slots
@@ -135,9 +160,8 @@ class ProbeViewer(QDialog):
         )
         if not ok or not name.strip():
             return
-        name = name.strip()
-        self._choices.append((name, path))
-        item = QListWidgetItem(name)
+        self._choices.append({'name': name.strip(), 'path': path, 'params': {}})
+        item = QListWidgetItem(name.strip())
         item.setToolTip(path)
         self.list_widget.addItem(item)
         self.list_widget.setCurrentRow(self.list_widget.count() - 1)
@@ -149,11 +173,38 @@ class ProbeViewer(QDialog):
         self._choices.pop(row)
         self.list_widget.takeItem(row)   # selection change → _on_row_changed
 
+    def _on_rename(self):
+        row = self.list_widget.currentRow()
+        if row < 0:
+            return
+        name, ok = QInputDialog.getText(
+            self, 'Rename probe', 'New name:', text=self._choices[row]['name']
+        )
+        if not ok or not name.strip():
+            return
+        self._choices[row]['name'] = name.strip()
+        self.list_widget.item(row).setText(name.strip())
+
+    def _on_change_file(self):
+        row = self.list_widget.currentRow()
+        if row < 0:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Change Probe File', self._choices[row]['path'],
+            'HDF5 files (*.h5 *.hdf5);;All files (*)'
+        )
+        if not path:
+            return
+        self._choices[row]['path'] = path          # name + params preserved
+        self.list_widget.item(row).setToolTip(path)
+        self._on_row_changed(row)                  # reload preview
+
     def _on_row_changed(self, row):
+        self._update_edit_buttons()
         if row < 0 or row >= len(self._choices):
             self._clear_selection()
             return
-        name, path = self._choices[row]
+        name, path = self._choices[row]['name'], self._choices[row]['path']
         try:
             with h5py.File(path, 'r') as f:
                 probe = f['probe'][()]
@@ -194,7 +245,7 @@ class ProbeViewer(QDialog):
     # ------------------------------------------------------------------
 
     def get_choices(self):
-        """Return the (possibly edited) library as a list of (name, path)."""
+        """Return the (possibly edited) library as a list of dicts."""
         return list(self._choices)
 
     def get_result(self):

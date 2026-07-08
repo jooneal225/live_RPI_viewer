@@ -42,6 +42,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QCheckBox, QLabel,
     QComboBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QLineEdit,
+    QListWidget, QListWidgetItem,
 )
 from PyQt5.QtCore import Qt, QByteArray
 
@@ -64,6 +65,15 @@ _INI_FILE   = Path(__file__).parent / 'settings.ini'
 # Combo-box entries → internal method strings (index-aligned).
 _METHOD_LABELS = ['Fast conjugate gradient RPI', 'Slow LBFGS RPI']
 _METHODS       = ['CG', 'LBFGS']
+
+# RPI parameters that can be stored per-probe (gpu_index is excluded: it is a
+# machine setting, not a probe property).
+_PROBE_PARAM_KEYS = (
+    'method', 'obj_shape',
+    'cg_n_iter', 'cg_clear_every', 'cg_loss_target', 'cg_probe_modes',
+    'lbfgs_reg_factor1', 'lbfgs_reg_factor2_lo', 'lbfgs_reg_factor2_hi',
+    'lbfgs_lr1', 'lbfgs_lr2', 'lbfgs_n_iter1', 'lbfgs_n_iter2', 'lbfgs_probe_modes',
+)
 
 
 class MainWindow(QMainWindow):
@@ -94,6 +104,9 @@ class MainWindow(QMainWindow):
         self._build_rpi_param_widgets()
         self._build_params_window()
         self.algo_combo.addItems(_METHOD_LABELS)
+
+        # Probe name is set only via the "Set Probe Choice" dialog.
+        self.probe_name_edit.setReadOnly(True)
 
         self._connect_signals()
         self._load_settings()
@@ -138,25 +151,91 @@ class MainWindow(QMainWindow):
         """Create every RPI parameter widget (defaults; overwritten on load)."""
         # Common parameters
         self.obj_shape_spin   = self._spin(32, 2048, 200)
-        self.probe_modes_spin = self._spin(0, 32, 0, special='All')
         self.gpu_index_spin   = self._spin(0, 7, 3)
         self.gpu_index_spin.setToolTip('Applies at next launch (GPU is selected '
                                        'before torch is imported).')
         # Fast conjugate-gradient parameters
-        self.n_iter_spin      = self._spin(1, 9999, 100)
-        self.clear_every_spin = self._spin(1, 9999, 10)
-        self.loss_target_edit = QLineEdit('0')
+        self.n_iter_spin        = self._spin(1, 9999, 100)
+        self.clear_every_spin   = self._spin(1, 9999, 10)
+        self.loss_target_edit   = QLineEdit('0')
+        self.cg_probe_modes_spin = self._spin(0, 32, 0, special='All')
         # Slow LBFGS parameters
-        self.reg1_edit        = QLineEdit('1e-5')
-        self.reg2_lo_edit     = QLineEdit('1e-8')
-        self.reg2_hi_edit     = QLineEdit('1e-6')
-        self.lr1_spin         = self._dspin(0.001, 2.0, 0.2, 3, 0.01)
-        self.lr2_spin         = self._dspin(0.001, 2.0, 0.1, 3, 0.01)
-        self.n_iter1_spin     = self._spin(0, 1000, 20)
-        self.n_iter2_spin     = self._spin(0, 1000, 60)
+        self.reg1_edit          = QLineEdit('1e-5')
+        self.reg2_lo_edit       = QLineEdit('1e-8')
+        self.reg2_hi_edit       = QLineEdit('1e-6')
+        self.lr1_spin           = self._dspin(0.001, 2.0, 0.2, 3, 0.01)
+        self.lr2_spin           = self._dspin(0.001, 2.0, 0.1, 3, 0.01)
+        self.n_iter1_spin       = self._spin(0, 1000, 20)
+        self.n_iter2_spin       = self._spin(0, 1000, 60)
+        self.lbfgs_probe_modes_spin = self._spin(0, 32, 0, special='All')
+
+    # Per-probe RPI parameter set: widget getters/setters keyed by name.
+    # gpu_index is intentionally excluded (a machine setting, not a probe one).
+    def _get_current_rpi_params(self):
+        return {
+            'method':              self._current_method(),
+            'obj_shape':           self.obj_shape_spin.value(),
+            'cg_n_iter':           self.n_iter_spin.value(),
+            'cg_clear_every':      self.clear_every_spin.value(),
+            'cg_loss_target':      self.loss_target_edit.text(),
+            'cg_probe_modes':      self.cg_probe_modes_spin.value(),
+            'lbfgs_reg_factor1':   self.reg1_edit.text(),
+            'lbfgs_reg_factor2_lo': self.reg2_lo_edit.text(),
+            'lbfgs_reg_factor2_hi': self.reg2_hi_edit.text(),
+            'lbfgs_lr1':           self.lr1_spin.value(),
+            'lbfgs_lr2':           self.lr2_spin.value(),
+            'lbfgs_n_iter1':       self.n_iter1_spin.value(),
+            'lbfgs_n_iter2':       self.n_iter2_spin.value(),
+            'lbfgs_probe_modes':   self.lbfgs_probe_modes_spin.value(),
+        }
+
+    def _apply_rpi_params(self, p):
+        """Load a saved per-probe parameter dict into the editable widgets."""
+        def _i(key, default):
+            try:    return int(p[key])
+            except (KeyError, ValueError, TypeError): return default
+        def _f(key, default):
+            try:    return float(p[key])
+            except (KeyError, ValueError, TypeError): return default
+        method = p.get('method')
+        if method in _METHODS:
+            self.algo_combo.setCurrentIndex(_METHODS.index(method))
+        self.obj_shape_spin.setValue(_i('obj_shape', self.obj_shape_spin.value()))
+        self.n_iter_spin.setValue(_i('cg_n_iter', self.n_iter_spin.value()))
+        self.clear_every_spin.setValue(_i('cg_clear_every', self.clear_every_spin.value()))
+        if 'cg_loss_target' in p:
+            self.loss_target_edit.setText(str(p['cg_loss_target']))
+        self.cg_probe_modes_spin.setValue(_i('cg_probe_modes', self.cg_probe_modes_spin.value()))
+        if 'lbfgs_reg_factor1' in p:
+            self.reg1_edit.setText(str(p['lbfgs_reg_factor1']))
+        if 'lbfgs_reg_factor2_lo' in p:
+            self.reg2_lo_edit.setText(str(p['lbfgs_reg_factor2_lo']))
+        if 'lbfgs_reg_factor2_hi' in p:
+            self.reg2_hi_edit.setText(str(p['lbfgs_reg_factor2_hi']))
+        self.lr1_spin.setValue(_f('lbfgs_lr1', self.lr1_spin.value()))
+        self.lr2_spin.setValue(_f('lbfgs_lr2', self.lr2_spin.value()))
+        self.n_iter1_spin.setValue(_i('lbfgs_n_iter1', self.n_iter1_spin.value()))
+        self.n_iter2_spin.setValue(_i('lbfgs_n_iter2', self.n_iter2_spin.value()))
+        self.lbfgs_probe_modes_spin.setValue(_i('lbfgs_probe_modes', self.lbfgs_probe_modes_spin.value()))
+
+    @staticmethod
+    def _format_rpi_params(p):
+        if not p:
+            return 'No parameters saved for this probe.'
+        return (
+            f"method: {p.get('method', '?')}     obj shape: {p.get('obj_shape', '?')}\n"
+            f"[CG]    n_iter={p.get('cg_n_iter', '?')}  clear_every={p.get('cg_clear_every', '?')}  "
+            f"loss_target={p.get('cg_loss_target', '?')}  probe_modes={p.get('cg_probe_modes', '?')}\n"
+            f"[LBFGS] reg={p.get('lbfgs_reg_factor1', '?')}/{p.get('lbfgs_reg_factor2_lo', '?')}/"
+            f"{p.get('lbfgs_reg_factor2_hi', '?')}  lr={p.get('lbfgs_lr1', '?')}/{p.get('lbfgs_lr2', '?')}  "
+            f"n_iter={p.get('lbfgs_n_iter1', '?')}/{p.get('lbfgs_n_iter2', '?')}  "
+            f"probe_modes={p.get('lbfgs_probe_modes', '?')}"
+        )
 
     def _build_params_window(self):
-        """Non-blocking window: common params on top, one column per method."""
+        """Non-blocking window: editable params on top, one column per method,
+        plus a probe list whose per-probe saved parameters can be viewed and
+        copied to / saved from the editable fields."""
         win = QDialog(self)
         win.setWindowTitle('RPI Parameters')
         win.setWindowFlags(win.windowFlags() | Qt.Window)
@@ -164,9 +243,8 @@ class MainWindow(QMainWindow):
 
         common_box = QGroupBox('Common')
         cf = QFormLayout(common_box)
-        cf.addRow('Obj shape:',   self.obj_shape_spin)
-        cf.addRow('Probe modes:', self.probe_modes_spin)
-        cf.addRow('GPU index:',   self.gpu_index_spin)
+        cf.addRow('Obj shape:', self.obj_shape_spin)
+        cf.addRow('GPU index:', self.gpu_index_spin)
         outer.addWidget(common_box)
 
         cols = QHBoxLayout()
@@ -176,6 +254,7 @@ class MainWindow(QMainWindow):
         cgf.addRow('N iter:',              self.n_iter_spin)
         cgf.addRow('Clear every:',         self.clear_every_spin)
         cgf.addRow('Loss target (0=off):', self.loss_target_edit)
+        cgf.addRow('Probe modes:',         self.cg_probe_modes_spin)
         cols.addWidget(cg_box)
 
         lb_box = QGroupBox(_METHOD_LABELS[1])
@@ -187,9 +266,41 @@ class MainWindow(QMainWindow):
         lbf.addRow('LR 2:',            self.lr2_spin)
         lbf.addRow('N iter 1:',        self.n_iter1_spin)
         lbf.addRow('N iter 2:',        self.n_iter2_spin)
+        lbf.addRow('Probe modes:',     self.lbfgs_probe_modes_spin)
         cols.addWidget(lb_box)
 
         outer.addLayout(cols)
+
+        # ---- Per-probe parameter presets ----
+        preset_box = QGroupBox('Per-probe parameters')
+        pv = QVBoxLayout(preset_box)
+
+        self._params_probe_list = QListWidget()
+        self._params_probe_list.setToolTip(
+            'Probes from "Set Probe Choice". Each can store its own RPI parameters.'
+        )
+        self._params_probe_list.currentRowChanged.connect(self._on_params_probe_selected)
+        pv.addWidget(self._params_probe_list)
+
+        btn_row = QHBoxLayout()
+        self._save_to_probe_btn   = QPushButton('Save RPI parameters to probe')
+        self._copy_from_probe_btn = QPushButton('Copy RPI parameters from probe')
+        self._save_to_probe_btn.clicked.connect(self._on_save_params_to_probe)
+        self._copy_from_probe_btn.clicked.connect(self._on_copy_params_from_probe)
+        btn_row.addWidget(self._save_to_probe_btn)
+        btn_row.addWidget(self._copy_from_probe_btn)
+        pv.addLayout(btn_row)
+
+        saved_box = QGroupBox('Saved parameters for selected probe (read-only)')
+        sv = QVBoxLayout(saved_box)
+        self._saved_params_label = QLabel('No probe selected.')
+        self._saved_params_label.setWordWrap(True)
+        self._saved_params_label.setStyleSheet('font-family: monospace;')
+        self._saved_params_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        sv.addWidget(self._saved_params_label)
+        pv.addWidget(saved_box)
+
+        outer.addWidget(preset_box)
 
         close_btn = QPushButton('Close')
         close_btn.clicked.connect(win.hide)
@@ -200,7 +311,61 @@ class MainWindow(QMainWindow):
     def _current_method(self):
         return _METHODS[self.algo_combo.currentIndex()]
 
+    def _refresh_params_probe_list(self):
+        """Repopulate the Setup-window probe list from the current library."""
+        lw = self._params_probe_list
+        prev = lw.currentRow()
+        lw.blockSignals(True)
+        lw.clear()
+        for entry in self._probe_choices:
+            item = QListWidgetItem(entry['name'])
+            item.setToolTip(entry['path'])
+            lw.addItem(item)
+        lw.blockSignals(False)
+        if 0 <= prev < lw.count():
+            lw.setCurrentRow(prev)
+        elif lw.count():
+            lw.setCurrentRow(0)
+        else:
+            self._on_params_probe_selected(-1)
+
+    def _on_params_probe_selected(self, row):
+        has = 0 <= row < len(self._probe_choices)
+        self._save_to_probe_btn.setEnabled(has)
+        self._copy_from_probe_btn.setEnabled(
+            has and bool(self._probe_choices[row].get('params'))
+        )
+        if has:
+            self._saved_params_label.setText(
+                self._format_rpi_params(self._probe_choices[row].get('params'))
+            )
+        else:
+            self._saved_params_label.setText('No probe selected.')
+
+    def _on_save_params_to_probe(self):
+        row = self._params_probe_list.currentRow()
+        if not (0 <= row < len(self._probe_choices)):
+            return
+        self._probe_choices[row]['params'] = self._get_current_rpi_params()
+        self._on_params_probe_selected(row)   # refresh read-only view + buttons
+        self._set_status(f'Saved RPI parameters to probe '
+                         f'“{self._probe_choices[row]["name"]}”.')
+
+    def _on_copy_params_from_probe(self):
+        row = self._params_probe_list.currentRow()
+        if not (0 <= row < len(self._probe_choices)):
+            return
+        params = self._probe_choices[row].get('params')
+        if not params:
+            QMessageBox.information(self._params_win, 'No parameters',
+                                    'This probe has no saved RPI parameters.')
+            return
+        self._apply_rpi_params(params)
+        self._set_status(f'Copied RPI parameters from probe '
+                         f'“{self._probe_choices[row]["name"]}”.')
+
     def _on_setup_params(self):
+        self._refresh_params_probe_list()
         self._params_win.show()
         self._params_win.raise_()
         self._params_win.activateWindow()
@@ -270,14 +435,16 @@ class MainWindow(QMainWindow):
         # ---- RPI: common ----
         self.obj_shape_spin.setValue(   int(  _get('rpi', 'obj_shape',    '200')))
         self.gpu_index_spin.setValue(   int(  _get('rpi', 'gpu_index',    '3')))
-        self.probe_modes_spin.setValue( int(  _get('rpi', 'probe_modes',  '0')))
         method = _get('rpi', 'method', 'CG')
         self.algo_combo.setCurrentIndex(_METHODS.index(method) if method in _METHODS else 0)
+        # Legacy fallback: probe_modes used to be a single common setting.
+        legacy_modes = _get('rpi', 'probe_modes', '0')
 
         # ---- RPI: conjugate-gradient ----
         self.n_iter_spin.setValue(      int(  _get('rpi_cg', 'n_iter',       '100')))
         self.clear_every_spin.setValue( int(  _get('rpi_cg', 'clear_every',  '10')))
         self.loss_target_edit.setText(        _get('rpi_cg', 'loss_target',  '0'))
+        self.cg_probe_modes_spin.setValue(int(_get('rpi_cg', 'probe_modes', legacy_modes)))
 
         # ---- RPI: LBFGS ----
         self.reg1_edit.setText(               _get('rpi_lbfgs', 'reg_factor1',    '1e-5'))
@@ -287,6 +454,7 @@ class MainWindow(QMainWindow):
         self.lr2_spin.setValue(         float(_get('rpi_lbfgs', 'lr2',            '0.1')))
         self.n_iter1_spin.setValue(     int(  _get('rpi_lbfgs', 'n_iter1',        '20')))
         self.n_iter2_spin.setValue(     int(  _get('rpi_lbfgs', 'n_iter2',        '60')))
+        self.lbfgs_probe_modes_spin.setValue(int(_get('rpi_lbfgs', 'probe_modes', legacy_modes)))
 
         # ---- Display ----
         self.unwrap_check.setChecked(         _get('display', 'unwrap',      'false').lower() == 'true')
@@ -298,14 +466,21 @@ class MainWindow(QMainWindow):
         self.deque_length_spin.setValue(int(  _get('app', 'deque_length', '3')))
         self.autosave_check.setChecked(       _get('app', 'autosave',     'false').lower() == 'true')
 
-        # ---- Probe-choice library ----
+        # ---- Probe-choice library (each entry: name, path, per-probe params) ----
         self._probe_choices = []
         n_choices = int(_get('probe_choices', 'count', '0'))
         for i in range(n_choices):
             nm  = _get('probe_choices', f'name{i}', '')
             pth = _get('probe_choices', f'path{i}', '')
-            if pth:
-                self._probe_choices.append((nm, pth))
+            if not pth:
+                continue
+            params = {}
+            sec = f'probe_params_{i}'
+            if cfg.has_section(sec):
+                for k in _PROBE_PARAM_KEYS:
+                    if cfg.has_option(sec, k):
+                        params[k] = cfg.get(sec, k)
+            self._probe_choices.append({'name': nm, 'path': pth, 'params': params})
 
         # ---- Window geometry + splitter position ----
         geo = _get('window', 'geometry', '')
@@ -352,13 +527,13 @@ class MainWindow(QMainWindow):
         cfg['rpi']      = {
             'obj_shape':    str(self.obj_shape_spin.value()),
             'gpu_index':    str(self.gpu_index_spin.value()),
-            'probe_modes':  str(self.probe_modes_spin.value()),
             'method':       self._current_method(),
         }
         cfg['rpi_cg']   = {
             'n_iter':       str(self.n_iter_spin.value()),
             'clear_every':  str(self.clear_every_spin.value()),
             'loss_target':  self.loss_target_edit.text(),
+            'probe_modes':  str(self.cg_probe_modes_spin.value()),
         }
         cfg['rpi_lbfgs'] = {
             'reg_factor1':    self.reg1_edit.text(),
@@ -368,6 +543,7 @@ class MainWindow(QMainWindow):
             'lr2':            str(self.lr2_spin.value()),
             'n_iter1':        str(self.n_iter1_spin.value()),
             'n_iter2':        str(self.n_iter2_spin.value()),
+            'probe_modes':    str(self.lbfgs_probe_modes_spin.value()),
         }
         cfg['display']  = {
             'unwrap':      str(self.unwrap_check.isChecked()).lower(),
@@ -383,10 +559,15 @@ class MainWindow(QMainWindow):
             'splitter': bytes(self.splitter.saveState().toHex()).decode(),
         }
         probe_choices = {'count': str(len(self._probe_choices))}
-        for i, (nm, pth) in enumerate(self._probe_choices):
-            probe_choices[f'name{i}'] = nm
-            probe_choices[f'path{i}'] = pth
+        for i, entry in enumerate(self._probe_choices):
+            probe_choices[f'name{i}'] = entry['name']
+            probe_choices[f'path{i}'] = entry['path']
         cfg['probe_choices'] = probe_choices
+        # Per-probe RPI parameter sets (only for probes that have one).
+        for i, entry in enumerate(self._probe_choices):
+            params = entry.get('params') or {}
+            if params:
+                cfg[f'probe_params_{i}'] = {k: str(v) for k, v in params.items()}
 
         with open(str(_INI_FILE), 'w') as f:
             cfg.write(f)
@@ -563,8 +744,13 @@ class MainWindow(QMainWindow):
             except (ValueError, AttributeError):
                 return default
 
+        method = self._current_method()
+        # Probe modes is now per-algorithm; pick the active algorithm's value.
+        n_probe_modes = (self.cg_probe_modes_spin.value() if method == 'CG'
+                         else self.lbfgs_probe_modes_spin.value())
+
         return {
-            'method':           self._current_method(),
+            'method':           method,
             'pv_name':          self.pv_name_edit.text().strip(),
             'h5_mode':          self.h5_check.isChecked(),
             'h5_file':          self.h5_file_edit.text().strip(),
@@ -574,7 +760,7 @@ class MainWindow(QMainWindow):
             'crop_N':           self.crop_N_spin.value(),
             'obj_shape':        self.obj_shape_spin.value(),
             'gpu_index':        self.gpu_index_spin.value(),
-            'n_probe_modes':    self.probe_modes_spin.value(),  # 0 = use all
+            'n_probe_modes':    n_probe_modes,  # 0 = use all
             # --- CG params ---
             'n_iter':           self.n_iter_spin.value(),
             'clear_every':      self.clear_every_spin.value(),
@@ -725,8 +911,10 @@ class MainWindow(QMainWindow):
             parent       = self,
         )
         dlg.exec_()
-        # Keep any add/delete edits to the library, regardless of accept/cancel.
+        # Keep any add/delete/rename/change-file edits to the library,
+        # regardless of accept/cancel, and reflect them in the Setup window.
         self._probe_choices = dlg.get_choices()
+        self._refresh_params_probe_list()
 
         name, path = dlg.get_result()
         if path is not None:
