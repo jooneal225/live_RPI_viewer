@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         self._results_deque: deque     = deque(maxlen=3)
         self._probe_raw                = None   # (N_opr, N_modes, N, N) complex
         self._probe_path               = None
+        self._probe_choices: list      = []     # [(name, path), …] probe library
         self._pixel_mask_full          = None   # 2-D float32
         self._res_m_probe              = None   # float
         self._autosave_h5_path: str | None = None  # set at first frame of each run
@@ -253,6 +254,7 @@ class MainWindow(QMainWindow):
             return cfg.get(section, key, fallback=fallback)
 
         self.probe_file_edit.setText(        _get('paths',    'probe_file',       ''))
+        self.probe_name_edit.setText(        _get('paths',    'probe_name',       ''))
         self.pixel_mask_file_edit.setText(   _get('paths',    'pixel_mask_file',  ''))
         self.pv_name_edit.setText(           _get('epics',    'pv_name',          ''))
         self.save_dir_edit.setText(          _get('paths',    'save_dir',         ''))
@@ -296,6 +298,15 @@ class MainWindow(QMainWindow):
         self.deque_length_spin.setValue(int(  _get('app', 'deque_length', '3')))
         self.autosave_check.setChecked(       _get('app', 'autosave',     'false').lower() == 'true')
 
+        # ---- Probe-choice library ----
+        self._probe_choices = []
+        n_choices = int(_get('probe_choices', 'count', '0'))
+        for i in range(n_choices):
+            nm  = _get('probe_choices', f'name{i}', '')
+            pth = _get('probe_choices', f'path{i}', '')
+            if pth:
+                self._probe_choices.append((nm, pth))
+
         # ---- Window geometry + splitter position ----
         geo = _get('window', 'geometry', '')
         if geo:
@@ -307,8 +318,9 @@ class MainWindow(QMainWindow):
         # Line edits: keep the tooltip in sync with the (possibly truncated)
         # text so hovering always reveals the full value. Restricted to our own
         # fields (pyqtgraph's ImageView has many internal QLineEdits).
-        for le in (self.probe_file_edit, self.pixel_mask_file_edit,
-                   self.pv_name_edit, self.save_dir_edit, self.h5_file_edit,
+        for le in (self.probe_file_edit, self.probe_name_edit,
+                   self.pixel_mask_file_edit, self.pv_name_edit,
+                   self.save_dir_edit, self.h5_file_edit,
                    self.loss_target_edit, self.reg1_edit, self.reg2_lo_edit,
                    self.reg2_hi_edit):
             le.setToolTip(le.text())
@@ -318,6 +330,7 @@ class MainWindow(QMainWindow):
         cfg = configparser.ConfigParser()
         cfg['paths']    = {
             'probe_file':       self.probe_file_edit.text(),
+            'probe_name':       self.probe_name_edit.text(),
             'pixel_mask_file':  self.pixel_mask_file_edit.text(),
             'save_dir':         self.save_dir_edit.text(),
         }
@@ -369,6 +382,11 @@ class MainWindow(QMainWindow):
             'geometry': bytes(self.saveGeometry().toHex()).decode(),
             'splitter': bytes(self.splitter.saveState().toHex()).decode(),
         }
+        probe_choices = {'count': str(len(self._probe_choices))}
+        for i, (nm, pth) in enumerate(self._probe_choices):
+            probe_choices[f'name{i}'] = nm
+            probe_choices[f'path{i}'] = pth
+        cfg['probe_choices'] = probe_choices
 
         with open(str(_INI_FILE), 'w') as f:
             cfg.write(f)
@@ -702,25 +720,29 @@ class MainWindow(QMainWindow):
             return
 
         dlg = ProbeViewer(
-            probe      = self._probe_raw,
-            probe_path = self._probe_path,
-            parent     = self,
+            choices      = self._probe_choices,
+            current_path = self._probe_path,
+            parent       = self,
         )
         dlg.exec_()
-        new_probe, new_path = dlg.get_result()
-        if new_probe is not None:
+        # Keep any add/delete edits to the library, regardless of accept/cancel.
+        self._probe_choices = dlg.get_choices()
+
+        name, path = dlg.get_result()
+        if path is not None:
             try:
-                probe, res_m = load_probe_file(new_path)
+                probe, res_m = load_probe_file(path)
                 self._probe_raw   = probe
-                self._probe_path  = new_path
+                self._probe_path  = path
                 self._res_m_probe = res_m
-                self.probe_file_edit.setText(new_path)
+                self.probe_file_edit.setText(path)
+                self.probe_name_edit.setText(name)
                 self._set_status(
-                    f'Probe updated: shape={probe.shape}, '
+                    f'Probe set: “{name}” — shape={probe.shape}, '
                     f'pixel size={res_m*1e9:.2f} nm'
                 )
             except Exception as exc:
-                self._set_status(f'Probe update error: {exc}')
+                self._set_status(f'Probe set error: {exc}')
 
     # ------------------------------------------------------------------ #
     # Save                                                                 #
