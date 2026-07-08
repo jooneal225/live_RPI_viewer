@@ -1,0 +1,10 @@
+PyQt5>=5.15
+pyqtgraph>=0.13
+numpy
+scipy
+scikit-image
+h5py
+tifffile
+pyepics
+torch
+cdtools
