@@ -139,38 +139,14 @@
            </property>
            <layout class="QVBoxLayout" name="h5_vl">
             <item>
-             <widget class="QCheckBox" name="h5_check">
-              <property name="text">
-               <string>Read from H5 file</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <layout class="QHBoxLayout" name="h5_hl">
+             <layout class="QHBoxLayout" name="h5_top_hl">
               <item>
-               <widget class="QLineEdit" name="h5_file_edit">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="placeholderText">
-                 <string>H5 file path…</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="h5_browse_btn">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
+               <widget class="QCheckBox" name="h5_check">
                 <property name="text">
-                 <string>...</string>
+                 <string>Read from H5 file</string>
                 </property>
                </widget>
               </item>
-             </layout>
-            </item>
-            <item>
-             <layout class="QHBoxLayout" name="h5_start_hl">
               <item>
                <widget class="QLabel" name="label_h5_start">
                 <property name="enabled">
@@ -212,180 +188,261 @@
               </item>
              </layout>
             </item>
-           </layout>
-          </widget>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="beamline_group">
-           <property name="title">
-            <string>Beamline</string>
-           </property>
-           <layout class="QFormLayout" name="beamline_form">
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_energy">
-              <property name="text">
-               <string>Energy (keV):</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QDoubleSpinBox" name="energy_kev_spin">
-              <property name="decimals">
-               <number>3</number>
-              </property>
-              <property name="minimum">
-               <double>0.100000000000000</double>
-              </property>
-              <property name="maximum">
-               <double>100.000000000000000</double>
-              </property>
-              <property name="singleStep">
-               <double>0.100000000000000</double>
-              </property>
-              <property name="value">
-               <double>12.000000000000000</double>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QLabel" name="label_detdist">
-              <property name="text">
-               <string>Det. distance (m):</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QDoubleSpinBox" name="detector_dist_spin">
-              <property name="decimals">
-               <number>3</number>
-              </property>
-              <property name="minimum">
-               <double>0.010000000000000</double>
-              </property>
-              <property name="maximum">
-               <double>10.000000000000000</double>
-              </property>
-              <property name="singleStep">
-               <double>0.010000000000000</double>
-              </property>
-              <property name="value">
-               <double>2.000000000000000</double>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </widget>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="detector_group">
-           <property name="title">
-            <string>Detector</string>
-           </property>
-           <layout class="QFormLayout" name="detector_form">
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_bcy">
-              <property name="text">
-               <string>Beam center Y:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QSpinBox" name="beam_cy_spin">
-              <property name="maximum">
-               <number>9999</number>
-              </property>
-              <property name="value">
-               <number>512</number>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QLabel" name="label_bcx">
-              <property name="text">
-               <string>Beam center X:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QSpinBox" name="beam_cx_spin">
-              <property name="maximum">
-               <number>9999</number>
-              </property>
-              <property name="value">
-               <number>512</number>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="0">
-             <widget class="QLabel" name="label_cropN">
-              <property name="text">
-               <string>Crop N:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QSpinBox" name="crop_N_spin">
-              <property name="minimum">
-               <number>64</number>
-              </property>
-              <property name="maximum">
-               <number>2048</number>
-              </property>
-              <property name="value">
-               <number>512</number>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </widget>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="rpi_group">
-           <property name="title">
-            <string>RPI Parameters</string>
-           </property>
-           <layout class="QVBoxLayout" name="rpi_group_layout">
             <item>
-             <widget class="QComboBox" name="algo_combo"/>
-            </item>
-            <item>
-             <widget class="QPushButton" name="setup_params_btn">
-              <property name="text">
-               <string>Setup parameters…</string>
-              </property>
-             </widget>
+             <layout class="QHBoxLayout" name="h5_hl">
+              <item>
+               <widget class="QLineEdit" name="h5_file_edit">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="placeholderText">
+                 <string>H5 file path…</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="h5_browse_btn">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="text">
+                 <string>...</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
             </item>
            </layout>
           </widget>
          </item>
          <item>
-          <widget class="QGroupBox" name="app_group">
-           <property name="title">
-            <string>App</string>
-           </property>
-           <layout class="QFormLayout" name="app_form">
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_deque">
-              <property name="text">
-               <string>Deque length:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QSpinBox" name="deque_length_spin">
-              <property name="minimum">
-               <number>1</number>
-              </property>
-              <property name="maximum">
-               <number>20</number>
-              </property>
-              <property name="value">
-               <number>3</number>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </widget>
+          <layout class="QHBoxLayout" name="beamdet_hl">
+           <item>
+            <widget class="QGroupBox" name="beamline_group">
+             <property name="title">
+              <string>Beamline</string>
+             </property>
+             <layout class="QFormLayout" name="beamline_form">
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_energy">
+                <property name="text">
+                 <string>Energy (keV):</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QDoubleSpinBox" name="energy_kev_spin">
+                <property name="decimals">
+                 <number>3</number>
+                </property>
+                <property name="minimum">
+                 <double>0.100000000000000</double>
+                </property>
+                <property name="maximum">
+                 <double>100.000000000000000</double>
+                </property>
+                <property name="singleStep">
+                 <double>0.100000000000000</double>
+                </property>
+                <property name="value">
+                 <double>12.000000000000000</double>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_detdist">
+                <property name="text">
+                 <string>Det. distance (m):</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QDoubleSpinBox" name="detector_dist_spin">
+                <property name="decimals">
+                 <number>3</number>
+                </property>
+                <property name="minimum">
+                 <double>0.010000000000000</double>
+                </property>
+                <property name="maximum">
+                 <double>10.000000000000000</double>
+                </property>
+                <property name="singleStep">
+                 <double>0.010000000000000</double>
+                </property>
+                <property name="value">
+                 <double>2.000000000000000</double>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="detector_group">
+             <property name="title">
+              <string>Detector</string>
+             </property>
+             <layout class="QFormLayout" name="detector_form">
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_bcy">
+                <property name="text">
+                 <string>Beam center Y:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QSpinBox" name="beam_cy_spin">
+                <property name="maximum">
+                 <number>9999</number>
+                </property>
+                <property name="value">
+                 <number>512</number>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_bcx">
+                <property name="text">
+                 <string>Beam center X:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QSpinBox" name="beam_cx_spin">
+                <property name="maximum">
+                 <number>9999</number>
+                </property>
+                <property name="value">
+                 <number>512</number>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_cropN">
+                <property name="text">
+                 <string>Crop N:</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QSpinBox" name="crop_N_spin">
+                <property name="minimum">
+                 <number>64</number>
+                </property>
+                <property name="maximum">
+                 <number>2048</number>
+                </property>
+                <property name="value">
+                 <number>512</number>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="rpi_saving_hl">
+           <item>
+            <widget class="QGroupBox" name="rpi_group">
+             <property name="title">
+              <string>RPI Parameters</string>
+             </property>
+             <layout class="QVBoxLayout" name="rpi_group_layout">
+              <item>
+               <widget class="QComboBox" name="algo_combo"/>
+              </item>
+              <item>
+               <widget class="QPushButton" name="setup_params_btn">
+                <property name="text">
+                 <string>Setup parameters…</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="saving_group">
+             <property name="title">
+              <string>Saving</string>
+             </property>
+             <layout class="QVBoxLayout" name="saving_vl">
+              <item>
+               <layout class="QHBoxLayout" name="deque_hl">
+                <item>
+                 <widget class="QLabel" name="label_deque">
+                  <property name="text">
+                   <string>Deque length:</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QSpinBox" name="deque_length_spin">
+                  <property name="minimum">
+                   <number>1</number>
+                  </property>
+                  <property name="maximum">
+                   <number>20</number>
+                  </property>
+                  <property name="value">
+                   <number>3</number>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <spacer name="deque_spacer">
+                  <property name="orientation">
+                   <enum>Qt::Horizontal</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                   <size>
+                    <width>40</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                 </spacer>
+                </item>
+               </layout>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="save_entry_hl">
+                <item>
+                 <widget class="QPushButton" name="save_btn">
+                  <property name="text">
+                   <string>Save</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="label_saveentry">
+                  <property name="text">
+                   <string>Entry (0 = newest):</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QSpinBox" name="save_entry_spin">
+                  <property name="maximum">
+                   <number>0</number>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="autosave_check">
+                <property name="text">
+                 <string>Auto-save each frame to H5</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
          </item>
          <item>
           <spacer name="leftSpacer">
@@ -416,28 +473,18 @@
          </widget>
         </item>
         <item>
+         <widget class="QLabel" name="pixel_info_label">
+          <property name="text">
+           <string></string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QGroupBox" name="display_group">
           <property name="title">
            <string>Display</string>
           </property>
           <layout class="QVBoxLayout" name="display_vl">
-           <item>
-            <layout class="QHBoxLayout" name="display_hl">
-             <item>
-              <spacer name="display_spacer">
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>0</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-            </layout>
-           </item>
            <item>
             <layout class="QHBoxLayout" name="ramp_hl">
              <item>
@@ -509,12 +556,6 @@
           <layout class="QGridLayout" name="control_grid">
            <item row="0" column="0">
             <widget class="QPushButton" name="start_btn">
-             <property name="minimumSize">
-              <size>
-               <width>0</width>
-               <height>0</height>
-              </size>
-             </property>
              <property name="text">
               <string>Start</string>
              </property>
@@ -523,46 +564,21 @@
            <item row="0" column="1">
             <widget class="QPushButton" name="change_probe_btn">
              <property name="text">
-              <string>Change Probe…</string>
+              <string>View Probe</string>
              </property>
             </widget>
            </item>
            <item row="1" column="0">
-            <widget class="QPushButton" name="save_btn">
+            <widget class="QPushButton" name="view_pv_btn">
              <property name="text">
-              <string>Save</string>
+              <string>View Diffraction Pattern</string>
              </property>
             </widget>
            </item>
            <item row="1" column="1">
-            <layout class="QHBoxLayout" name="save_entry_hl">
-             <item>
-              <widget class="QLabel" name="label_saveentry">
-               <property name="text">
-                <string>Entry (0 = newest):</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QSpinBox" name="save_entry_spin">
-               <property name="maximum">
-                <number>0</number>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </item>
-           <item row="2" column="0" colspan="2">
-            <widget class="QCheckBox" name="autosave_check">
+            <widget class="QPushButton" name="view_deque_btn">
              <property name="text">
-              <string>Auto-save each frame to H5</string>
-             </property>
-            </widget>
-           </item>
-           <item row="3" column="0" colspan="2">
-            <widget class="QPushButton" name="view_pv_btn">
-             <property name="text">
-              <string>View Diffraction Pattern</string>
+              <string>View Deque</string>
              </property>
             </widget>
            </item>

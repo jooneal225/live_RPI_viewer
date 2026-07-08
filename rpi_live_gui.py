@@ -81,6 +81,12 @@ class MainWindow(QMainWindow):
         self._res_m_probe              = None   # float
         self._autosave_h5_path: str | None = None  # set at first frame of each run
         self._pv_viewer: _PVImageViewer | None = None
+        self._deque_viewer: _DequeViewer | None = None
+
+        # Reconstruction-image cursor readout state
+        self._last_display_img  = None   # processed phase currently shown
+        self._last_pixel_size_m = None   # metres/pixel of the current frame
+        self._mouse_rc          = None   # (row, col) under the cursor, or None
 
         # Build the RPI parameter widgets + the non-blocking parameters window,
         # and populate the algorithm combo box.
@@ -94,6 +100,12 @@ class MainWindow(QMainWindow):
         # Add Reset Zoom to reconstruction image view context menu
         _vb = self.image_view.getView()
         _vb.menu.addAction('Reset Zoom', _vb.autoRange)
+
+        # Track the cursor over the reconstruction image for the readout label.
+        self._recon_vb = _vb
+        self._recon_mouse_proxy = pg.SignalProxy(
+            _vb.scene().sigMouseMoved, rateLimit=60, slot=self._on_recon_mouse_moved
+        )
 
         # Auto-load files specified in settings
         self._try_load_probe()
@@ -218,6 +230,7 @@ class MainWindow(QMainWindow):
 
         # Main controls
         self.view_pv_btn.clicked.connect(self._on_view_pv_image)
+        self.view_deque_btn.clicked.connect(self._on_view_deque)
         self.start_btn.clicked.connect(self._on_start_stop)
         self.change_probe_btn.clicked.connect(self._on_change_probe)
         self.save_btn.clicked.connect(self._on_save)
@@ -568,8 +581,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._set_status(f'Auto-save error: {exc}')
 
-    def _render_entry(self, entry):
-        obj        = entry['obj']
+    def _process_phase(self, obj):
+        """Apply the current Display settings (unwrap / ramp removal) to the
+        phase of one complex object array and return the display phase."""
         phase      = np.angle(obj).astype(np.float32)
         do_unwrap  = self.unwrap_check.isChecked()
         do_ramp    = self.ramp_check.isChecked()
@@ -584,15 +598,74 @@ class MainWindow(QMainWindow):
             phase  = remove_phase_ramp(phase, radius=radius).astype(np.float32)
             if not do_unwrap:
                 phase = ((phase + np.pi) % (2 * np.pi) - np.pi).astype(np.float32)
+        return phase
+
+    def _render_entry(self, entry):
+        phase = self._process_phase(entry['obj'])
         # With pg.setConfigOptions(imageAxisOrder='row-major'), data[row, col]
         # maps to (y, x) correctly — no transpose needed.
         self.image_view.setImage(phase, autoLevels=True, autoRange=False)
+        self._last_display_img  = phase
+        self._last_pixel_size_m = entry.get('pixel_size_m')
+        self._update_pixel_info()
 
     def _rerender_last(self):
         """Re-display the most recent deque entry when unwrap toggle changes."""
         if not self._results_deque:
             return
         self._render_entry(self._results_deque[-1])
+
+    # ------------------------------------------------------------------ #
+    # Reconstruction-image cursor readout                                 #
+    # ------------------------------------------------------------------ #
+
+    def _on_recon_mouse_moved(self, event):
+        pos = event[0]
+        img = self._last_display_img
+        if img is None:
+            return
+        if not self._recon_vb.sceneBoundingRect().contains(pos):
+            self._mouse_rc = None
+        else:
+            pt = self._recon_vb.mapSceneToView(pos)
+            x, y = int(pt.x()), int(pt.y())   # x = column, y = row (row-major)
+            ny, nx = img.shape
+            self._mouse_rc = (y, x) if (0 <= x < nx and 0 <= y < ny) else None
+        self._update_pixel_info()
+
+    def _update_pixel_info(self):
+        parts = []
+        if self._last_pixel_size_m is not None:
+            parts.append(f'pixel: {self._last_pixel_size_m * 1e9:.2f} nm')
+        if self._mouse_rc is not None and self._last_display_img is not None:
+            r, c = self._mouse_rc
+            parts.append(f'x={c}  y={r}')
+            parts.append(f'value={float(self._last_display_img[r, c]):.1f}')
+        self.pixel_info_label.setText('     '.join(parts))
+
+    # ------------------------------------------------------------------ #
+    # View deque                                                          #
+    # ------------------------------------------------------------------ #
+
+    def _on_view_deque(self):
+        if not self._results_deque:
+            QMessageBox.information(self, 'Empty deque',
+                                    'Run at least one frame first.')
+            return
+        # Oldest → newest, left → right; each processed with current settings.
+        imgs = [self._process_phase(e['obj']) for e in self._results_deque]
+        try:
+            concat = np.concatenate(imgs, axis=1)
+        except ValueError:
+            QMessageBox.warning(self, 'Cannot concatenate',
+                                'Deque frames have differing shapes.')
+            return
+        if self._deque_viewer is None:
+            self._deque_viewer = _DequeViewer(self)
+        self._deque_viewer.set_image(concat, n=len(imgs))
+        self._deque_viewer.show()
+        self._deque_viewer.raise_()
+        self._deque_viewer.activateWindow()
 
     # ------------------------------------------------------------------ #
     # Change probe dialog                                                  #
@@ -798,6 +871,34 @@ class _PVImageViewer(QDialog):
             self._pos_label.setText(f'x={int(pt.x())}, y={int(pt.y())}')
         else:
             self._pos_label.setText('')
+
+
+class _DequeViewer(QDialog):
+    """Non-modal window showing every deque frame concatenated side-by-side.
+
+    The caller passes an image already built from the current Display settings
+    (unwrap / ramp removal applied per frame), so this window only displays it.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Deque')
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.resize(900, 400)
+
+        layout = QVBoxLayout(self)
+        self._iv = pg.ImageView()
+        layout.addWidget(self._iv)
+
+        vb = self._iv.getView()
+        vb.menu.addAction('Reset Zoom', vb.autoRange)
+        self._first_image = True
+
+    def set_image(self, img, n=1):
+        self.setWindowTitle(f'Deque — {n} frame(s), oldest → newest')
+        # row-major: data[row, col] → (y, x); autoRange only on first display.
+        self._iv.setImage(img, autoLevels=True, autoRange=self._first_image)
+        self._first_image = False
 
 
 class _DiagnosticDialog(QDialog):
