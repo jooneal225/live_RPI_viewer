@@ -55,7 +55,9 @@ _DTYPE_MAP = {
 def _pv_to_image(pv):
     """Decode a PVA AreaDetector PvObject to a 2D numpy array (rows, cols)."""
     data_key = list(pv['value'][0].keys())[0]
-    shape    = tuple(dim['size'] for dim in pv['dimension'])
+    # pv['dimension'] is ordered [size_x, size_y] with x fastest-varying,
+    # so the (rows, cols) shape for a C-order reshape is the reverse.
+    shape    = tuple(dim['size'] for dim in pv['dimension'])[::-1]
     codec    = pv['codec']['name']
 
     if codec == '':
@@ -83,7 +85,7 @@ def _pv_to_image(pv):
     else:
         raise ValueError(f'Unsupported codec: {codec!r}')
 
-    return arr.reshape(shape).T
+    return arr.reshape(shape)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -411,10 +413,11 @@ class CGWorker(RPIWorkerBase):
 
         # 3. Initialise rec dict with a fresh random object each frame
         self._step = 'initializing CG rec dict'
-        obj_init = (
-            t.randn(1, obj_shape, obj_shape, device=device)
-            + 1j * t.randn(1, obj_shape, obj_shape, device=device)
-        ).to(t.complex64) * 0.01
+        # obj_init = (
+        #     t.randn(1, obj_shape, obj_shape, device=device)
+        #     + 1j * t.randn(1, obj_shape, obj_shape, device=device)
+        # ).to(t.complex64) * 0.01
+        obj_init = t.ones(1, obj_shape, obj_shape, device=device, dtype=t.complex64)
         obj_init.requires_grad_(True)
 
         rec = {
