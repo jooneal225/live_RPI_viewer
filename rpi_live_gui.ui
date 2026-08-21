@@ -561,6 +561,16 @@
               </property>
              </widget>
             </item>
+            <item row="2" column="0" colspan="2">
+             <widget class="QCheckBox" name="allow_repeat_check">
+              <property name="toolTip">
+               <string>When off (default), a diffraction pattern with the same detector frame ID as the last one is not re-analyzed -- the loop just waits for the next frame. When on, every polled frame is analyzed even if it repeats.</string>
+              </property>
+              <property name="text">
+               <string>Allow re-analyzing repeated frames</string>
+              </property>
+             </widget>
+            </item>
            </layout>
           </widget>
          </item>

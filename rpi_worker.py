@@ -123,6 +123,7 @@ class RPIWorkerBase(QThread):
         self.results_deque    = results_deque
         self._running         = False
         self._frame_counter   = 0
+        self._last_plot_call_id = None
         self._step            = 'not started'
 
         # Shared timing / diagnostic state
@@ -247,6 +248,13 @@ class RPIWorkerBase(QThread):
                         time.sleep(1)
                         continue
                     self.raw_image_ready.emit(raw)
+
+                    frame_id = pv_obj['uniqueId']
+                    if not p['allow_repeat_frames'] and frame_id == self._last_plot_call_id:
+                        time.sleep(0.05)
+                        continue
+                    self._last_plot_call_id = frame_id
+
                     dp  = raw[y0:y1, x0:x1] * self._mask_crop
 
                 self._dp = dp
@@ -358,7 +366,7 @@ class RPIWorkerBase(QThread):
             '',
             'Key parameters:',
             f'  method={p.get("method", "?")}',
-            f'  crop_N={p["crop_N"]}  obj_shape={p["obj_shape"]}',
+            f'  crop_N={p["crop_N"]}  obj_shape={p["obj_shape"]}  obj_init={p.get("obj_init", "?")}',
             f'  beam_cy={p["beam_cy"]}  beam_cx={p["beam_cx"]}',
             f'  energy_kev={p["energy_kev"]}  detector_distance={p["detector_distance"]} m',
             f'  res_m_probe={p["res_m_probe"]:.4g} m  ({p["res_m_probe"]*1e9:.3f} nm)',
@@ -386,6 +394,7 @@ class CGWorker(RPIWorkerBase):
         self._n_iter      = p['n_iter']
         self._clear_every = p['clear_every']
         self._loss_target = p['loss_target']
+        self._obj_init    = p.get('obj_init', 'flat')
 
         # Preallocated GPU buffer for the per-iteration loss. iterate_CG writes
         # into it device-side (no host sync); the curve is copied back once per
@@ -411,13 +420,15 @@ class CGWorker(RPIWorkerBase):
             sqrt_pat[None], dtype=t.float32, device=device
         )  # (1, crop_N, crop_N)
 
-        # 3. Initialise rec dict with a fresh random object each frame
+        # 3. Initialise rec dict with a fresh object each frame
         self._step = 'initializing CG rec dict'
-        # obj_init = (
-        #     t.randn(1, obj_shape, obj_shape, device=device)
-        #     + 1j * t.randn(1, obj_shape, obj_shape, device=device)
-        # ).to(t.complex64) * 0.01
-        obj_init = t.ones(1, obj_shape, obj_shape, device=device, dtype=t.complex64)
+        if self._obj_init == 'random':
+            obj_init = (
+                t.randn(1, obj_shape, obj_shape, device=device)
+                + 1j * t.randn(1, obj_shape, obj_shape, device=device)
+            ).to(t.complex64) * 0.01
+        else:
+            obj_init = t.ones(1, obj_shape, obj_shape, device=device, dtype=t.complex64)
         obj_init.requires_grad_(True)
 
         rec = {
@@ -506,6 +517,7 @@ class LBFGSWorker(RPIWorkerBase):
         self._lr2     = p['lr2']
         self._n_iter1 = p['n_iter1']
         self._n_iter2 = p['n_iter2']
+        self._obj_init = p.get('obj_init', 'flat')
 
     def _reconstruct(self, dp):
         device   = self._device
@@ -533,7 +545,7 @@ class LBFGSWorker(RPIWorkerBase):
             obj_size=[self._obj_shape, self._obj_shape],
             n_modes=self._N_modes,
             mask=self._mask_crop,
-            initialization='random',
+            initialization=('random' if self._obj_init == 'random' else 'uniform'),
         )
         model.to(device=device)
 

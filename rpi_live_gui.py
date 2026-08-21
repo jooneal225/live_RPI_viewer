@@ -66,10 +66,16 @@ _INI_FILE   = Path(__file__).parent / 'settings.ini'
 _METHOD_LABELS = ['Fast conjugate gradient RPI', 'Slow LBFGS RPI']
 _METHODS       = ['CG', 'LBFGS']
 
+# Combo-box entries → internal object-initialisation strings (index-aligned).
+# Shared by both algorithms: CG uses it directly, LBFGS maps 'flat' to
+# cdtools' 'uniform' initialisation.
+_INIT_LABELS = ['Random', 'Flat']
+_INITS       = ['random', 'flat']
+
 # RPI parameters that can be stored per-probe (gpu_index is excluded: it is a
 # machine setting, not a probe property).
 _PROBE_PARAM_KEYS = (
-    'method', 'obj_shape',
+    'method', 'obj_shape', 'obj_init',
     'cg_n_iter', 'cg_clear_every', 'cg_loss_target', 'cg_probe_modes',
     'lbfgs_reg_factor1', 'lbfgs_reg_factor2_lo', 'lbfgs_reg_factor2_hi',
     'lbfgs_lr1', 'lbfgs_lr2', 'lbfgs_n_iter1', 'lbfgs_n_iter2', 'lbfgs_probe_modes',
@@ -88,6 +94,9 @@ class MainWindow(QMainWindow):
         self._probe_raw                = None   # (N_opr, N_modes, N, N) complex
         self._probe_path               = None
         self._probe_choices: list      = []     # [(name, path), …] probe library
+        self._probe_data_cache: dict   = {}     # {path: {'probe', 'res_m'}}, shared
+                                                 # across ProbeViewer opens so probes
+                                                 # already loaded aren't re-read
         self._pixel_mask_full          = None   # 2-D float32
         self._res_m_probe              = None   # float
         self._autosave_h5_path: str | None = None  # set at first frame of each run
@@ -121,8 +130,10 @@ class MainWindow(QMainWindow):
             _vb.scene().sigMouseMoved, rateLimit=60, slot=self._on_recon_mouse_moved
         )
 
-        # Auto-load files specified in settings
-        self._try_load_probe()
+        # Probe selection happens through "Set Probe Choice" — opened here once
+        # at startup — rather than an automatic disk read of settings.ini's
+        # last-used probe path.
+        self._on_change_probe()
         self._try_load_mask()
 
     # ------------------------------------------------------------------ #
@@ -154,6 +165,12 @@ class MainWindow(QMainWindow):
         self.gpu_index_spin   = self._spin(0, 7, 3)
         self.gpu_index_spin.setToolTip('Applies at next launch (GPU is selected '
                                        'before torch is imported).')
+        self.obj_init_combo   = QComboBox()
+        self.obj_init_combo.addItems(_INIT_LABELS)
+        self.obj_init_combo.setCurrentIndex(_INITS.index('flat'))
+        self.obj_init_combo.setToolTip(
+            'Initial object guess used by both algorithms each frame.'
+        )
         # Fast conjugate-gradient parameters
         self.n_iter_spin        = self._spin(1, 9999, 100)
         self.clear_every_spin   = self._spin(1, 9999, 10)
@@ -175,6 +192,7 @@ class MainWindow(QMainWindow):
         return {
             'method':              self._current_method(),
             'obj_shape':           self.obj_shape_spin.value(),
+            'obj_init':            self._current_obj_init(),
             'cg_n_iter':           self.n_iter_spin.value(),
             'cg_clear_every':      self.clear_every_spin.value(),
             'cg_loss_target':      self.loss_target_edit.text(),
@@ -201,6 +219,9 @@ class MainWindow(QMainWindow):
         if method in _METHODS:
             self.algo_combo.setCurrentIndex(_METHODS.index(method))
         self.obj_shape_spin.setValue(_i('obj_shape', self.obj_shape_spin.value()))
+        obj_init = p.get('obj_init')
+        if obj_init in _INITS:
+            self.obj_init_combo.setCurrentIndex(_INITS.index(obj_init))
         self.n_iter_spin.setValue(_i('cg_n_iter', self.n_iter_spin.value()))
         self.clear_every_spin.setValue(_i('cg_clear_every', self.clear_every_spin.value()))
         if 'cg_loss_target' in p:
@@ -223,7 +244,8 @@ class MainWindow(QMainWindow):
         if not p:
             return 'No parameters saved for this probe.'
         return (
-            f"method: {p.get('method', '?')}     obj shape: {p.get('obj_shape', '?')}\n"
+            f"method: {p.get('method', '?')}     obj shape: {p.get('obj_shape', '?')}     "
+            f"obj init: {p.get('obj_init', '?')}\n"
             f"[CG]    n_iter={p.get('cg_n_iter', '?')}  clear_every={p.get('cg_clear_every', '?')}  "
             f"loss_target={p.get('cg_loss_target', '?')}  probe_modes={p.get('cg_probe_modes', '?')}\n"
             f"[LBFGS] reg={p.get('lbfgs_reg_factor1', '?')}/{p.get('lbfgs_reg_factor2_lo', '?')}/"
@@ -244,6 +266,7 @@ class MainWindow(QMainWindow):
         common_box = QGroupBox('Common')
         cf = QFormLayout(common_box)
         cf.addRow('Obj shape:', self.obj_shape_spin)
+        cf.addRow('Obj init:', self.obj_init_combo)
         cf.addRow('GPU index:', self.gpu_index_spin)
         outer.addWidget(common_box)
 
@@ -310,6 +333,9 @@ class MainWindow(QMainWindow):
 
     def _current_method(self):
         return _METHODS[self.algo_combo.currentIndex()]
+
+    def _current_obj_init(self):
+        return _INITS[self.obj_init_combo.currentIndex()]
 
     def _refresh_params_probe_list(self):
         """Repopulate the Setup-window probe list from the current library."""
@@ -387,6 +413,9 @@ class MainWindow(QMainWindow):
         # H5 replay toggle
         self.h5_check.toggled.connect(self._on_h5_toggled)
 
+        # Allow-repeat-frames toggle (live while a run is in progress)
+        self.allow_repeat_check.toggled.connect(self._on_allow_repeat_toggled)
+
         # Reload probe/mask when paths change
         self.probe_file_edit.editingFinished.connect(self._try_load_probe)
         self.pixel_mask_file_edit.editingFinished.connect(self._try_load_mask)
@@ -435,6 +464,10 @@ class MainWindow(QMainWindow):
         # ---- RPI: common ----
         self.obj_shape_spin.setValue(   int(  _get('rpi', 'obj_shape',    '200')))
         self.gpu_index_spin.setValue(   int(  _get('rpi', 'gpu_index',    '3')))
+        obj_init = _get('rpi', 'obj_init', 'flat')
+        self.obj_init_combo.setCurrentIndex(
+            _INITS.index(obj_init) if obj_init in _INITS else _INITS.index('flat')
+        )
         method = _get('rpi', 'method', 'CG')
         self.algo_combo.setCurrentIndex(_METHODS.index(method) if method in _METHODS else 0)
         # Legacy fallback: probe_modes used to be a single common setting.
@@ -526,6 +559,7 @@ class MainWindow(QMainWindow):
         }
         cfg['rpi']      = {
             'obj_shape':    str(self.obj_shape_spin.value()),
+            'obj_init':     self._current_obj_init(),
             'gpu_index':    str(self.gpu_index_spin.value()),
             'method':       self._current_method(),
         }
@@ -671,6 +705,10 @@ class MainWindow(QMainWindow):
         self.h5_start_spin.setEnabled(checked)
         self.pv_name_edit.setEnabled(not checked)
 
+    def _on_allow_repeat_toggled(self, checked):
+        if self._worker is not None:
+            self._worker.params['allow_repeat_frames'] = checked
+
     # ------------------------------------------------------------------ #
     # Start / Stop                                                         #
     # ------------------------------------------------------------------ #
@@ -759,8 +797,10 @@ class MainWindow(QMainWindow):
             'beam_cx':          self.beam_cx_spin.value(),
             'crop_N':           self.crop_N_spin.value(),
             'obj_shape':        self.obj_shape_spin.value(),
+            'obj_init':         self._current_obj_init(),
             'gpu_index':        self.gpu_index_spin.value(),
             'n_probe_modes':    n_probe_modes,  # 0 = use all
+            'allow_repeat_frames': self.allow_repeat_check.isChecked(),
             # --- CG params ---
             'n_iter':           self.n_iter_spin.value(),
             'clear_every':      self.clear_every_spin.value(),
@@ -908,6 +948,7 @@ class MainWindow(QMainWindow):
         dlg = ProbeViewer(
             choices      = self._probe_choices,
             current_path = self._probe_path,
+            probe_cache  = self._probe_data_cache,
             parent       = self,
         )
         dlg.exec_()
@@ -916,21 +957,17 @@ class MainWindow(QMainWindow):
         self._probe_choices = dlg.get_choices()
         self._refresh_params_probe_list()
 
-        name, path = dlg.get_result()
+        name, path, probe, res_m = dlg.get_result()
         if path is not None:
-            try:
-                probe, res_m = load_probe_file(path)
-                self._probe_raw   = probe
-                self._probe_path  = path
-                self._res_m_probe = res_m
-                self.probe_file_edit.setText(path)
-                self.probe_name_edit.setText(name)
-                self._set_status(
-                    f'Probe set: “{name}” — shape={probe.shape}, '
-                    f'pixel size={res_m*1e9:.2f} nm'
-                )
-            except Exception as exc:
-                self._set_status(f'Probe set error: {exc}')
+            self._probe_raw   = probe
+            self._probe_path  = path
+            self._res_m_probe = res_m
+            self.probe_file_edit.setText(path)
+            self.probe_name_edit.setText(name)
+            self._set_status(
+                f'Probe set: “{name}” — shape={probe.shape}, '
+                f'pixel size={res_m*1e9:.2f} nm'
+            )
 
     # ------------------------------------------------------------------ #
     # Save                                                                 #
