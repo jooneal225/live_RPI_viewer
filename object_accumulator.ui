@@ -1,0 +1,672 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ObjectAccumulator</class>
+ <widget class="QDialog" name="ObjectAccumulator">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1280</width>
+    <height>880</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Object Accumulator</string>
+  </property>
+  <layout class="QVBoxLayout" name="outerLayout">
+   <item>
+    <widget class="QSplitter" name="accum_splitter">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="childrenCollapsible">
+      <bool>true</bool>
+     </property>
+     <widget class="QScrollArea" name="accum_scroll">
+      <property name="widgetResizable">
+       <bool>true</bool>
+      </property>
+      <property name="minimumSize">
+       <size>
+        <width>300</width>
+        <height>0</height>
+       </size>
+      </property>
+      <widget class="QWidget" name="accum_scroll_contents">
+       <property name="geometry">
+        <rect>
+         <x>0</x>
+         <y>0</y>
+         <width>400</width>
+         <height>960</height>
+        </rect>
+       </property>
+       <layout class="QVBoxLayout" name="controlsLayout">
+        <item>
+         <widget class="QGroupBox" name="positions_group">
+          <property name="title">
+           <string>Stage positions</string>
+          </property>
+          <layout class="QVBoxLayout" name="positions_vl">
+           <item>
+            <layout class="QFormLayout" name="positions_form">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_pos_source">
+               <property name="text">
+                <string>Source:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QComboBox" name="pos_source_combo">
+               <property name="toolTip">
+                <string>Where each frame's stage position comes from. &quot;Simulated&quot; reads no PVs at all and walks a deterministic raster — use it to exercise the whole pipeline offline.</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_h_pv">
+               <property name="text">
+                <string>Horizontal PV:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLineEdit" name="h_motor_pv_edit">
+               <property name="toolTip">
+                <string>Read-back PV for the horizontal stage.</string>
+               </property>
+               <property name="text">
+                <string>12ideMCS1:m1.RBV</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_v_pv">
+               <property name="text">
+                <string>Vertical PV:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QLineEdit" name="v_motor_pv_edit">
+               <property name="toolTip">
+                <string>Read-back PV for the vertical stage. The default here is a placeholder — replace it with the real vertical motor.</string>
+               </property>
+               <property name="text">
+                <string>12ideMCS1:m2.RBV</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="0">
+              <widget class="QLabel" name="label_pos_h5">
+               <property name="text">
+                <string>Position H5:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="1">
+              <layout class="QHBoxLayout" name="pos_h5_hl">
+               <item>
+                <widget class="QLineEdit" name="pos_h5_file_edit">
+                 <property name="toolTip">
+                  <string>H5 file holding the positions for an H5 pattern replay, in datasets &quot;ppX&quot; (horizontal) and &quot;ppY&quot; (vertical). Indexed by the same pattern index as the diffraction file.</string>
+                 </property>
+                 <property name="placeholderText">
+                  <string>H5 with ppX / ppY datasets…</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pos_h5_browse_btn">
+                 <property name="maximumSize">
+                  <size>
+                   <width>34</width>
+                   <height>16777215</height>
+                  </size>
+                 </property>
+                 <property name="text">
+                  <string>...</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item row="4" column="0">
+              <widget class="QLabel" name="label_motor_units">
+               <property name="text">
+                <string>Position units:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="1">
+              <widget class="QComboBox" name="motor_units_combo">
+               <property name="toolTip">
+                <string>Units the PVs / ppX / ppY report in. Everything downstream works in microns. Axis inversion and H/V swap live in the Options menu.</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QPushButton" name="test_read_btn">
+             <property name="toolTip">
+              <string>Read the configured position source once, right now, and report what came back.</string>
+             </property>
+             <property name="text">
+              <string>Test position read</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="canvas_group">
+          <property name="title">
+           <string>Object canvas (fixed at Start)</string>
+          </property>
+          <layout class="QVBoxLayout" name="canvas_vl">
+           <item>
+            <layout class="QFormLayout" name="canvas_form">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_size_x">
+               <property name="text">
+                <string>X size (µm):</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QDoubleSpinBox" name="size_x_um_spin">
+               <property name="decimals">
+                <number>2</number>
+               </property>
+               <property name="minimum">
+                <double>1.000000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>10000.000000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>5.000000000000000</double>
+               </property>
+               <property name="value">
+                <double>30.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_size_y">
+               <property name="text">
+                <string>Y size (µm):</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QDoubleSpinBox" name="size_y_um_spin">
+               <property name="decimals">
+                <number>2</number>
+               </property>
+               <property name="minimum">
+                <double>1.000000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>10000.000000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>5.000000000000000</double>
+               </property>
+               <property name="value">
+                <double>30.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_first_frame">
+               <property name="text">
+                <string>First image at:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QComboBox" name="first_frame_combo">
+               <property name="toolTip">
+                <string>Where the first accepted frame is placed. A corner choice insets by half a frame, so that frame sits flush against the canvas edge and the scan grows inward.</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QLabel" name="canvas_info_label">
+             <property name="styleSheet">
+              <string notr="true">font-family: monospace;</string>
+             </property>
+             <property name="text">
+              <string/>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="frames_group">
+          <property name="title">
+           <string>Frame acceptance and preparation</string>
+          </property>
+          <layout class="QVBoxLayout" name="frames_vl">
+           <item>
+            <layout class="QFormLayout" name="frames_form">
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_loss_thresh">
+               <property name="text">
+                <string>Loss threshold:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLineEdit" name="loss_thresh_edit">
+               <property name="toolTip">
+                <string>Skip any frame whose final reconstruction loss exceeds this. 0 accepts everything.</string>
+               </property>
+               <property name="text">
+                <string>0</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_accum_mode">
+               <property name="text">
+                <string>Overlaps:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QComboBox" name="accum_mode_combo">
+               <property name="toolTip">
+                <string>How a new frame combines with what is already on the canvas. Can be changed while a run is in progress.</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_decay">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="text">
+                <string>Decay factor:</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QDoubleSpinBox" name="decay_spin">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="toolTip">
+                <string>Decaying average only. The whole object and tracker are multiplied by this before each new frame is added, so older frames count for less without changing the normalisation. 1.00 is the same as a plain average; lower values forget faster.</string>
+               </property>
+               <property name="decimals">
+                <number>3</number>
+               </property>
+               <property name="minimum">
+                <double>0.100000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>1.000000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>0.010000000000000</double>
+               </property>
+               <property name="value">
+                <double>0.950000000000000</double>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="unwrap_check">
+             <property name="toolTip">
+              <string>Unwrap each frame's phase inside its illuminated area before stamping.</string>
+             </property>
+             <property name="text">
+              <string>Unwrap phase</string>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="ramp_check">
+             <property name="toolTip">
+              <string>Remove each frame's linear phase ramp before stamping. Without this, neighbouring tiles rarely line up.</string>
+             </property>
+             <property name="text">
+              <string>Remove phase ramp</string>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="zero_mean_check">
+             <property name="toolTip">
+              <string>Subtract each frame's mean phase over its illuminated area. Removes the per-frame piston offset that otherwise makes every tile edge visible.</string>
+             </property>
+             <property name="text">
+              <string>Subtract mean over illumination</string>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="align_check">
+             <property name="toolTip">
+              <string>Phase-correlate each new frame against what is already on the canvas, over the overlapping pixels only, and shift it by the result. Corrections larger than the limit in the Options menu are rejected, so a bad correlation cannot throw a frame across the object. Needs overlap, so the first frame at any fresh spot is placed on its motor position alone.</string>
+             </property>
+             <property name="text">
+              <string>Align positions by phase correlation</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="recenter_check">
+             <property name="toolTip">
+              <string>When &quot;Refresh object&quot; is pressed, also forget the reference position so the next accepted frame is placed at the anchor again. Off = the canvas keeps its original frame of reference.</string>
+             </property>
+             <property name="text">
+              <string>Re-anchor on refresh</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="accum_display_group">
+          <property name="title">
+           <string>Display</string>
+          </property>
+          <layout class="QFormLayout" name="accum_display_form">
+           <item row="0" column="0">
+            <widget class="QLabel" name="label_display_every">
+             <property name="text">
+              <string>Redraw every:</string>
+             </property>
+            </widget>
+           </item>
+           <item row="0" column="1">
+            <widget class="QSpinBox" name="display_every_spin">
+             <property name="toolTip">
+              <string>Request a redraw only every N accepted frames. Accumulation never waits for the display either way.</string>
+             </property>
+             <property name="suffix">
+              <string> frame(s)</string>
+             </property>
+             <property name="minimum">
+              <number>1</number>
+             </property>
+             <property name="maximum">
+              <number>999</number>
+             </property>
+             <property name="value">
+              <number>1</number>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="0" colspan="2">
+            <widget class="QCheckBox" name="accum_autolevel_check">
+             <property name="text">
+              <string>Auto colorscale</string>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="controls_group">
+          <property name="title">
+           <string>Control</string>
+          </property>
+          <layout class="QGridLayout" name="controls_grid">
+           <item row="0" column="0" colspan="2">
+            <widget class="QPushButton" name="start_btn">
+             <property name="text">
+              <string>Start</string>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="0">
+            <widget class="QPushButton" name="refresh_btn">
+             <property name="enabled">
+              <bool>false</bool>
+             </property>
+             <property name="toolTip">
+              <string>Zero the object and the pixel-contribution tracker without stopping the run.</string>
+             </property>
+             <property name="text">
+              <string>Refresh object</string>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="1">
+            <widget class="QPushButton" name="save_btn">
+             <property name="enabled">
+              <bool>false</bool>
+             </property>
+             <property name="text">
+              <string>Save object…</string>
+             </property>
+            </widget>
+           </item>
+           <item row="2" column="0">
+            <widget class="QPushButton" name="show_tracker_btn">
+             <property name="enabled">
+              <bool>false</bool>
+             </property>
+             <property name="toolTip">
+              <string>Open a one-shot snapshot of the pixel-contribution tracker. Does not update live.</string>
+             </property>
+             <property name="text">
+              <string>Contribution map</string>
+             </property>
+            </widget>
+           </item>
+           <item row="2" column="1">
+            <widget class="QPushButton" name="close_btn">
+             <property name="text">
+              <string>Close</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="monitor_group">
+          <property name="title">
+           <string>Monitor</string>
+          </property>
+          <layout class="QVBoxLayout" name="monitor_vl">
+           <item>
+            <widget class="QLabel" name="monitor_label">
+             <property name="styleSheet">
+              <string notr="true">font-family: monospace;</string>
+             </property>
+             <property name="text">
+              <string>Idle.</string>
+             </property>
+             <property name="textInteractionFlags">
+              <set>Qt::TextSelectableByMouse</set>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <spacer name="controlsSpacer">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>0</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+     <widget class="QSplitter" name="right_splitter">
+      <property name="orientation">
+       <enum>Qt::Vertical</enum>
+      </property>
+      <property name="childrenCollapsible">
+       <bool>true</bool>
+      </property>
+      <widget class="QWidget" name="image_pane">
+       <layout class="QVBoxLayout" name="imageLayout">
+        <property name="leftMargin">
+         <number>0</number>
+        </property>
+        <property name="topMargin">
+         <number>0</number>
+        </property>
+        <property name="rightMargin">
+         <number>0</number>
+        </property>
+        <property name="bottomMargin">
+         <number>0</number>
+        </property>
+        <item>
+         <widget class="ImageView" name="accum_image_view" native="true">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>1</horstretch>
+            <verstretch>1</verstretch>
+           </sizepolicy>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="accum_cursor_label">
+          <property name="styleSheet">
+           <string notr="true">font-family: monospace;</string>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="diag_pane">
+       <layout class="QVBoxLayout" name="diagLayout">
+        <property name="leftMargin">
+         <number>0</number>
+        </property>
+        <property name="topMargin">
+         <number>0</number>
+        </property>
+        <property name="rightMargin">
+         <number>0</number>
+        </property>
+        <property name="bottomMargin">
+         <number>0</number>
+        </property>
+        <item>
+         <layout class="QHBoxLayout" name="log_btn_hl">
+          <item>
+           <widget class="QLabel" name="label_log">
+            <property name="text">
+             <string>Diagnostics</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="log_btn_spacer">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>0</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QPushButton" name="copy_log_btn">
+            <property name="toolTip">
+             <string>Copy the whole diagnostic log to the clipboard.</string>
+            </property>
+            <property name="text">
+             <string>Copy log</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="clear_log_btn">
+            <property name="text">
+             <string>Clear log</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QTextEdit" name="log_text">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+          <property name="lineWrapMode">
+           <enum>QTextEdit::NoWrap</enum>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">font-family: monospace;</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>ImageView</class>
+   <extends>QWidget</extends>
+   <header>pyqtgraph</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

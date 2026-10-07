@@ -5,6 +5,8 @@ Utility functions for RPI Live: dataset construction, probe loading, saving.
 import os
 import sys
 import csv
+import json
+import re
 import time
 from pathlib import Path
 
@@ -109,12 +111,107 @@ def crop_mask(mask_full, beam_cy, beam_cx, crop_N):
 
 
 # ---------------------------------------------------------------------------
+# Illuminated-area geometry
+# ---------------------------------------------------------------------------
+
+PROBE_SHAPES = ('circle', 'square')
+DEFAULT_PROBE_SHAPE = 'circle'
+DEFAULT_FILL_FRACTION = 0.5
+
+# Masks are identical for every frame of a run, so build each one once.
+_ILLUM_MASK_CACHE = {}
+
+
+def illumination_mask(n, shape=DEFAULT_PROBE_SHAPE,
+                      fill_fraction=DEFAULT_FILL_FRACTION, fudge=1.0):
+    """
+    Boolean (n, n) mask of the illuminated area, centred in the array.
+
+    RPI reconstructs a square object array, but the probe only illuminates a
+    circle or square inside it. Everything outside that region is noise, so
+    phase unwrapping, ramp fitting, display zoom and object stitching all want
+    to be restricted to it.
+
+    Parameters
+    ----------
+    n : int
+        Side length of the (square) object array.
+    shape : {'circle', 'square'}
+        Geometry of the illuminated area.
+    fill_fraction : float
+        Illuminated diameter (or side) as a fraction of n.
+    fudge : float
+        Multiplier applied to fill_fraction. Callers use different values for
+        different purposes (e.g. 1.2 for the display zoom box, 1.0 for phase
+        processing); see the _*_FUDGE constants in rpi_live_gui.py.
+
+    Returns
+    -------
+    ndarray, (n, n) bool
+    """
+    n = int(n)
+    key = (n, shape, round(float(fill_fraction), 6), round(float(fudge), 6))
+    cached = _ILLUM_MASK_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    half = fudge * float(fill_fraction) * n / 2.0
+    y, x = np.indices((n, n), dtype=np.float32)
+    cy = cx = (n - 1) / 2.0
+    y -= cy
+    x -= cx
+    if shape == 'square':
+        mask = (np.abs(x) <= half) & (np.abs(y) <= half)
+    else:   # default to a circle for anything unrecognised
+        mask = (x * x + y * y) <= half * half
+
+    # A degenerate fill_fraction would mask out every pixel and make the ramp
+    # fit singular; fall back to the whole array and let the caller see it.
+    if not mask.any():
+        mask = np.ones((n, n), dtype=bool)
+
+    _ILLUM_MASK_CACHE[key] = mask
+    return mask
+
+
+# ---------------------------------------------------------------------------
 # Wavelength helper
 # ---------------------------------------------------------------------------
 
 def energy_kev_to_wavelength(energy_kev):
     """Convert X-ray energy in keV to wavelength in metres."""
     return 1.239841984e-9 / energy_kev
+
+
+def propagate_probe_angular_spectrum(probe, res_m, wavelength_m, distance_um):
+    """
+    Propagate a probe by distance_um microns using cdtools' angular-spectrum
+    near-field propagator. Returns a new array; the input is left untouched.
+
+    Parameters
+    ----------
+    probe : ndarray, shape (N_opr, N_modes, N, N), complex
+    res_m : float
+        Probe pixel size in metres.
+    wavelength_m : float
+        Wavelength of light in metres.
+    distance_um : float
+        Propagation distance in microns (positive = downstream).
+
+    Returns
+    -------
+    ndarray, same shape as probe, complex64
+    """
+    import torch
+    from cdtools.tools import propagators
+
+    shape = probe.shape[-2:]
+    z_m = distance_um * 1e-6
+    wavefront = torch.as_tensor(probe, dtype=torch.complex64)
+    prop = propagators.generate_angular_spectrum_propagator(
+        shape, (res_m, res_m), wavelength_m, z_m,
+    )
+    return propagators.near_field(wavefront, prop).numpy()
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +389,7 @@ def save_rpi_result(entry, probe_interp, params, save_dir):
     return str(h5_path)
 
 
-def remove_phase_ramp(phase, radius=None):
+def remove_phase_ramp(phase, radius=None, mask=None):
     """
     Remove a best-fit linear phase ramp from a 2D phase array.
 
@@ -302,28 +399,103 @@ def remove_phase_ramp(phase, radius=None):
         2D real-valued phase array, e.g. unwrap(np.angle(...))
     radius : float or None
         If given, only use pixels within a centered disk of this radius
-        (in pixels) to fit the ramp.
+        (in pixels) to fit the ramp. Ignored when `mask` is given.
+    mask : (Ny, Nx) bool ndarray or None
+        Region to operate on, typically from illumination_mask(). The plane is
+        fitted on these pixels *and subtracted only from them* — pixels outside
+        keep their original value, so the dark corners of an RPI object are
+        left alone rather than having a meaningless ramp applied to them.
 
     Returns
     -------
     phase_corr : ndarray
-        Phase with linear ramp removed.
+        Phase with the linear ramp removed.
     """
     ny, nx = phase.shape
     y, x = np.indices((ny, nx))
     x = x - (nx - 1) / 2
     y = y - (ny - 1) / 2
 
-    if radius is not None:
-        mask = (x**2 + y**2) <= radius**2
+    if mask is not None:
+        fit_mask = np.asarray(mask, dtype=bool)
+        restrict = True
+    elif radius is not None:
+        fit_mask = (x**2 + y**2) <= radius**2
+        restrict = False     # legacy behaviour: fit on a disk, subtract globally
     else:
-        mask = np.ones_like(phase, dtype=bool)
+        fit_mask = np.ones_like(phase, dtype=bool)
+        restrict = False
 
-    A = np.column_stack([x[mask], y[mask], np.ones(mask.sum())])
-    coeffs, _, _, _ = np.linalg.lstsq(A, phase[mask], rcond=None)
+    # Three free parameters need at least three points; bail out unchanged
+    # rather than handing a singular system to lstsq.
+    if fit_mask.sum() < 3:
+        return phase
+
+    A = np.column_stack([x[fit_mask], y[fit_mask], np.ones(fit_mask.sum())])
+    coeffs, _, _, _ = np.linalg.lstsq(A, phase[fit_mask], rcond=None)
     a, b, c = coeffs
     ramp = a * x + b * y + c
+    if restrict:
+        return np.where(fit_mask, phase - ramp, phase)
     return phase - ramp
+
+
+def process_phase_region(phase, mask, unwrap=False, ramp=False, zero_mean=False):
+    """
+    Apply phase post-processing **inside `mask` only**, leaving the rest alone.
+
+    An RPI object array is mostly dark outside the illuminated spot. Unwrapping
+    or ramp-fitting over the whole array lets that noise drive the result, so
+    every caller (live display and object stitching alike) restricts the
+    operation to the illuminated region from illumination_mask().
+
+    Parameters
+    ----------
+    phase : (Ny, Nx) real ndarray
+        Wrapped phase, i.e. np.angle(obj).
+    mask : (Ny, Nx) bool ndarray
+        Region to operate on.
+    unwrap : bool
+        Unwrap the phase inside the mask.
+    ramp : bool
+        Fit and subtract a linear ramp over the mask. Ramp removal needs a
+        continuous phase, so the phase is unwrapped internally even when
+        `unwrap` is False — in that case the result is re-wrapped afterwards.
+    zero_mean : bool
+        Subtract the mean over the mask (removes the per-frame piston offset
+        that otherwise makes stitched tiles visible).
+
+    Returns
+    -------
+    ndarray, float32, same shape as `phase`
+    """
+    out = np.asarray(phase, dtype=np.float32)
+    if not (unwrap or ramp or zero_mean):
+        return out
+    out = out.copy()
+    mask = np.asarray(mask, dtype=bool)
+
+    if (unwrap or ramp) and mask.sum() >= 4:
+        # unwrap_phase honours a masked array: masked pixels take no part in
+        # the unwrap and come back masked, so they keep their original value.
+        try:
+            uw = unwrap_phase(np.ma.masked_array(out, ~mask))
+            out = np.where(mask, np.ma.filled(uw, 0.0).astype(np.float32), out)
+        except Exception:
+            # A pathological mask (disconnected, single-pixel-wide) can make
+            # the unwrap fail; the wrapped phase is a usable fallback.
+            pass
+
+    if ramp:
+        out = remove_phase_ramp(out, mask=mask).astype(np.float32)
+        if not unwrap:
+            rewrapped = (out + np.pi) % (2 * np.pi) - np.pi
+            out = np.where(mask, rewrapped, out).astype(np.float32)
+
+    if zero_mean and mask.any():
+        out = np.where(mask, out - float(out[mask].mean()), out).astype(np.float32)
+
+    return out
 
 
 def autosave_append(path, entry):
@@ -401,3 +573,221 @@ def _save_tiff(path, img, pixel_size_m):
             'yspacing': 1e6 * pixel_size_m,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Configuration JSON (probe library + beamline + detector geometry)
+# ---------------------------------------------------------------------------
+#
+# settings.ini remains the authoritative per-session store. This JSON is the
+# portable export/import format: it carries everything needed to reproduce a
+# setup on another machine or after a beamtime, *except* Crop N, which is a
+# per-run detector choice rather than a property of the setup.
+
+CONFIG_SCHEMA_VERSION = 1
+
+_BEAMLINE_KEYS = ('energy_kev', 'detector_distance')
+_DETECTOR_KEYS = ('beam_center_y', 'beam_center_x')
+
+
+def normalize_probe_entry(entry):
+    """Coerce one probe-library entry into the canonical dict shape.
+
+    Accepts partial dicts (older exports, hand-edited files) and fills in the
+    defaults, so every consumer can assume all keys are present.
+    """
+    shape = str(entry.get('shape', DEFAULT_PROBE_SHAPE)).lower()
+    if shape not in PROBE_SHAPES:
+        shape = DEFAULT_PROBE_SHAPE
+    try:
+        fill = float(entry.get('fill_fraction', DEFAULT_FILL_FRACTION))
+    except (TypeError, ValueError):
+        fill = DEFAULT_FILL_FRACTION
+    fill = min(max(fill, 0.01), 1.0)
+    return {
+        'name':          str(entry.get('name', '')),
+        'path':          str(entry.get('path', '')),
+        'enabled':       bool(entry.get('enabled', True)),
+        'shape':         shape,
+        'fill_fraction': fill,
+        'params':        dict(entry.get('params') or {}),
+    }
+
+
+def build_config_dict(probes, beamline, detector):
+    """Assemble the JSON-serialisable config document."""
+    return {
+        'schema_version': CONFIG_SCHEMA_VERSION,
+        'probes':   [normalize_probe_entry(p) for p in (probes or [])],
+        'beamline': {k: float(beamline.get(k, 0.0)) for k in _BEAMLINE_KEYS},
+        'detector': {k: int(detector.get(k, 0))     for k in _DETECTOR_KEYS},
+    }
+
+
+def write_config_json(path, cfg):
+    """Write a config document (from build_config_dict) to disk."""
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+        f.write('\n')
+
+
+def read_config_json(path):
+    """
+    Read and validate a config JSON.
+
+    Returns
+    -------
+    (probes, beamline, detector)
+        probes   : list of normalised entry dicts
+        beamline : {'energy_kev', 'detector_distance'}
+        detector : {'beam_center_y', 'beam_center_x'}
+
+    Raises
+    ------
+    ValueError
+        With a message naming the specific problem, so the GUI can show it
+        verbatim instead of a bare traceback.
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except OSError as exc:
+        raise ValueError(f'Could not open {path}: {exc}')
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'{path} is not valid JSON: {exc}')
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f'{path}: expected a JSON object at the top level, '
+            f'got {type(data).__name__}.'
+        )
+
+    version = data.get('schema_version', CONFIG_SCHEMA_VERSION)
+    if int(version) > CONFIG_SCHEMA_VERSION:
+        raise ValueError(
+            f'{path} was written by a newer version of this GUI '
+            f'(schema_version {version} > {CONFIG_SCHEMA_VERSION}).'
+        )
+
+    raw_probes = data.get('probes', [])
+    if not isinstance(raw_probes, list):
+        raise ValueError(f'{path}: "probes" must be a list.')
+    probes = []
+    for i, p in enumerate(raw_probes):
+        if not isinstance(p, dict):
+            raise ValueError(f'{path}: probes[{i}] must be an object.')
+        if not p.get('path'):
+            raise ValueError(f'{path}: probes[{i}] has no "path".')
+        probes.append(normalize_probe_entry(p))
+
+    def _section(name, keys, cast):
+        src = data.get(name, {})
+        if not isinstance(src, dict):
+            raise ValueError(f'{path}: "{name}" must be an object.')
+        out = {}
+        for k in keys:
+            if k not in src:
+                continue
+            try:
+                out[k] = cast(src[k])
+            except (TypeError, ValueError):
+                raise ValueError(f'{path}: {name}.{k} is not a number ({src[k]!r}).')
+        return out
+
+    beamline = _section('beamline', _BEAMLINE_KEYS, float)
+    detector = _section('detector', _DETECTOR_KEYS, int)
+    return probes, beamline, detector
+
+
+# ---------------------------------------------------------------------------
+# Accumulated (stitched) object save
+# ---------------------------------------------------------------------------
+
+_SCAN_DIR_RE = re.compile(r'^[Ss](\d{1,6})$')
+_SCAN_ANY_RE = re.compile(r'[Ss](\d{3,6})')
+
+
+def scan_tag_from_path(path):
+    """Best-effort scan identifier for a data file, e.g. 'S0082'.
+
+    Beamline paths put the scan in its own directory
+    (.../preproc/S0082/data_roi0_Ndp1024_dp.hdf5), so the directory components
+    are checked deepest-first before falling back to the filename. Returns
+    None when nothing looks like a scan number, and the caller should then use
+    a timestamp.
+    """
+    if not path:
+        return None
+    p = Path(str(path))
+    dirs = list(reversed(p.parts[:-1]))
+    for part in dirs:                       # a directory that is just "S0082"
+        m = _SCAN_DIR_RE.match(part)
+        if m:
+            return f'S{int(m.group(1)):04d}'
+    for part in dirs:                       # ...or contains it, "scan_S0082"
+        m = _SCAN_ANY_RE.search(part)
+        if m:
+            return f'S{int(m.group(1)):04d}'
+    m = _SCAN_ANY_RE.search(p.stem)         # ...or only the filename has it
+    if m:
+        return f'S{int(m.group(1)):04d}'
+    return None
+
+
+def save_accumulated_object(path, obj_sum, contrib, positions_um, positions_px,
+                            pixel_size_m, meta=None, extra=None):
+    """
+    Save a stitched object from the Object Accumulator to HDF5.
+
+    The stitched image (object_normalized = obj_sum / contrib) is stored
+    alongside the contribution tracker. The raw summed array is deliberately
+    not written — it is only an intermediate, and at canvas size it would
+    double the file for nothing.
+
+    Parameters
+    ----------
+    path : str or Path
+    obj_sum : (Ny, Nx) float ndarray
+        Summed phase; each contributing frame added once. Used to compute
+        object_normalized, not stored itself.
+    contrib : (Ny, Nx) uint ndarray
+        Per-pixel contribution count (the pixel_contribution_tracker).
+    positions_um : sequence of (x, y)
+        Motor positions of every accepted frame, in microns.
+    positions_px : sequence of (col, row)
+        The same positions as canvas pixel offsets from the centre.
+    pixel_size_m : float
+        Canvas pixel size (equal to the RPI object pixel size).
+    meta : dict or None
+        Scalar run parameters, written as root attributes.
+    extra : dict or None
+        Additional {name: array} datasets, e.g. the per-frame record table.
+        Empty arrays are skipped.
+
+    Returns
+    -------
+    str  the path written
+    """
+    path = str(path)
+    contrib = np.asarray(contrib)
+    normalized = np.zeros(obj_sum.shape, dtype=np.float32)
+    np.divide(obj_sum, contrib, out=normalized, where=contrib > 0)
+
+    with h5py.File(path, 'w') as f:
+        f.create_dataset('object_normalized',  data=normalized)
+        f.create_dataset('pixel_contribution', data=contrib)
+        f.create_dataset('positions_um',
+                         data=np.asarray(positions_um, dtype=np.float64).reshape(-1, 2))
+        f.create_dataset('positions_px',
+                         data=np.asarray(positions_px, dtype=np.int64).reshape(-1, 2))
+        f.create_dataset('obj_pixel_size_m', data=float(pixel_size_m))
+        for name, arr in (extra or {}).items():
+            arr = np.asarray(arr)
+            if arr.size:
+                f.create_dataset(name, data=arr)
+        for k, v in (meta or {}).items():
+            try:
+                f.attrs[k] = v
+            except TypeError:
+                f.attrs[k] = str(v)   # h5py rejects e.g. None / nested dicts
+    return path

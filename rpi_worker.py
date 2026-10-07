@@ -19,6 +19,7 @@ traceback.
 
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -126,6 +127,22 @@ class RPIWorkerBase(QThread):
         self._last_plot_call_id = None
         self._step            = 'not started'
 
+        # Optional hook, set by the Object Accumulator after construction:
+        #   position_reader(frame_index) -> (x, y)
+        # It is called in this thread right after each diffraction pattern is
+        # acquired, so a blocking pyepics .get() is fine here. frame_index is
+        # the H5 pattern index in replay mode and None when reading from a PV,
+        # which lets an H5-backed position source stay aligned with the
+        # patterns. The result lands in entry['position']; a failure lands in
+        # entry['position_error'] and does not stop the run.
+        self.position_reader  = None
+
+        # Mid-run probe swap (used by the "Propagate probe" window): the GUI
+        # thread drops a new raw probe here and the hot loop picks it up before
+        # the next frame. Guarded by a lock because the two threads touch it.
+        self._probe_lock      = threading.Lock()
+        self._pending_probe   = None    # (probe_raw, label) or None
+
         # Shared timing / diagnostic state
         self._total_time      = 0.0
         self._last_frame_s    = None
@@ -150,6 +167,47 @@ class RPIWorkerBase(QThread):
     def stop(self):
         """Signal the loop to exit after the current frame finishes."""
         self._running = False
+
+    def set_probe(self, probe_raw, label=''):
+        """Replace the probe without stopping the run.
+
+        Called from the GUI thread (the "Propagate probe" window). The new
+        probe is interpolated and handed to the algorithm before the next
+        frame starts; the frame in flight finishes with the old one.
+        """
+        with self._probe_lock:
+            self._pending_probe = (probe_raw, label)
+
+    # ------------------------------------------------------------------
+    # Probe preparation
+    # ------------------------------------------------------------------
+
+    def _prepare_probe_interp(self):
+        """Interpolate self.probe_raw to the crop size and select modes."""
+        probe_interp = interp_probe(self.probe_raw, self._crop_N)
+        n_sel = self.params['n_probe_modes']
+        if n_sel and n_sel < probe_interp.shape[0]:
+            probe_interp = probe_interp[:n_sel]
+        self._probe_interp = probe_interp
+        self._N_modes      = probe_interp.shape[0]
+
+    def _apply_pending_probe(self):
+        """Swap in a probe handed over by set_probe(), if there is one."""
+        with self._probe_lock:
+            pending, self._pending_probe = self._pending_probe, None
+        if pending is None:
+            return
+        probe_raw, label = pending
+        self._step = 'applying new probe'
+        self.probe_raw = probe_raw
+        self._prepare_probe_interp()
+        self._on_probe_changed()
+        self.status_update.emit(
+            f'New probe applied mid-run{f" ({label})" if label else ""}.')
+
+    def _on_probe_changed(self):
+        """Hook for backends that cache something derived from the probe."""
+        pass
 
     # ------------------------------------------------------------------
     # Main loop (shared)
@@ -182,12 +240,7 @@ class RPIWorkerBase(QThread):
 
             self._step = 'interpolating probe'
             self.status_update.emit('Preparing probe…')
-            probe_interp = interp_probe(self.probe_raw, crop_N)
-            n_sel = p['n_probe_modes']
-            if n_sel and n_sel < probe_interp.shape[0]:
-                probe_interp = probe_interp[:n_sel]
-            self._probe_interp = probe_interp
-            self._N_modes = probe_interp.shape[0]
+            self._prepare_probe_interp()
             N_probe = self.probe_raw.shape[-1]
 
             self._step = 'computing pixel sizes'
@@ -209,9 +262,11 @@ class RPIWorkerBase(QThread):
                 _n_h5_dp  = _h5_dset.shape[0]
                 _h5_N     = _h5_dset.shape[-1]    # spatial size of each stored pattern
                 _h5_idx   = p['h5_start_idx']     # local frame counter (wraps around)
+                _h5_stride = max(1, int(p.get('h5_stride', 1)))
                 self.status_update.emit(
                     f'H5 file ready: {_n_h5_dp} patterns, size {_h5_N}×{_h5_N}, '
-                    f'starting at index {_h5_idx}'
+                    f'starting at index {_h5_idx}, analyzing every '
+                    f'{_h5_stride}{"" if _h5_stride == 1 else "-th"} pattern'
                 )
             else:
                 self._step = 'connecting to EPICS PV'
@@ -221,11 +276,17 @@ class RPIWorkerBase(QThread):
             while self._running:
                 frame_start = time.time()
 
+                # 0. Pick up a probe handed over mid-run (re-propagation).
+                if self._pending_probe is not None:
+                    self._apply_pending_probe()
+
                 # 1. Acquire diffraction pattern
                 self._step = 'acquiring diffraction pattern'
+                pos_index = None        # H5 pattern index, for the position hook
                 if p['h5_mode']:
-                    raw    = _h5_dset[_h5_idx % _n_h5_dp].astype(np.float32)
-                    _h5_idx += 1
+                    pos_index = _h5_idx % _n_h5_dp
+                    raw    = _h5_dset[pos_index].astype(np.float32)
+                    _h5_idx += _h5_stride
                     self.raw_image_ready.emit(raw)
                     # Pattern is already centered; crop further around its centre.
                     cy, cx = _h5_N // 2, _h5_N // 2
@@ -259,6 +320,18 @@ class RPIWorkerBase(QThread):
 
                 self._dp = dp
 
+                # 1b. Sample the stage position as close in time to the frame
+                #     as possible. A failure here is reported per-frame rather
+                #     than aborting the run — the accumulator decides whether
+                #     a position-less frame is usable.
+                position, position_error = None, None
+                if self.position_reader is not None:
+                    self._step = 'reading stage position'
+                    try:
+                        position = self.position_reader(pos_index)
+                    except Exception as exc:
+                        position_error = f'{type(exc).__name__}: {exc}'
+
                 if not self._running:
                     break
 
@@ -279,9 +352,12 @@ class RPIWorkerBase(QThread):
                     'loss_history': loss,
                     'pixel_size_m': self._res_rpi_m,
                     'frame_idx':    self._frame_counter,
+                    'source_idx':   pos_index,
                     'timestamp':    time.time(),
                     'probe_interp': self._probe_interp,
                     'raw_image':    raw if not p['h5_mode'] else None,
+                    'position':       position,
+                    'position_error': position_error,
                 }
                 self.results_deque.append(entry)
                 self.frame_ready.emit(entry)
@@ -386,9 +462,10 @@ class CGWorker(RPIWorkerBase):
     def _setup(self):
         p = self.params
         device = self._device
-        # Convert probe and mask to GPU tensors once
+        # Convert probe and mask to GPU tensors once (the probe again on each
+        # mid-run swap, via _on_probe_changed)
         self._step = 'moving probe and mask to GPU'
-        self._probe_t = t.tensor(self._probe_interp, dtype=t.complex64, device=device)
+        self._on_probe_changed()
         self._mask_t  = t.tensor(self._mask_crop, device=device)
 
         self._n_iter      = p['n_iter']
@@ -403,6 +480,10 @@ class CGWorker(RPIWorkerBase):
 
         self._cg_total_ms = 0.0   # cumulative CG-only time across completed frames
         self._last_cg_ms  = 0.0
+
+    def _on_probe_changed(self):
+        self._probe_t = t.tensor(self._probe_interp, dtype=t.complex64,
+                                 device=self._device)
 
     def _reconstruct(self, dp):
         p          = self.params

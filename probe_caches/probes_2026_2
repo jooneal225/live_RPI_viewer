@@ -1,0 +1,86 @@
+[
+  {
+    "name": "02_levitan circle RZP",
+    "path": "/net/micdata/data2/12IDC/2026_Data/2026_2/02_levitan/ptychi_recons/S0005/Ndp1024_LSQML_c30_m0.5_gaussian_p10_cp_mm_opr3_ic_pc1_f_ul2/recon_Niter1000.h5",
+    "params": {
+      "method": "CG",
+      "obj_shape": "160",
+      "obj_init": "flat",
+      "cg_n_iter": "400",
+      "cg_clear_every": "30",
+      "cg_loss_target": "1.4e4",
+      "cg_probe_modes": "6",
+      "lbfgs_reg_factor1": "1e-4",
+      "lbfgs_reg_factor2_lo": "1e-7",
+      "lbfgs_reg_factor2_hi": "1e-5",
+      "lbfgs_lr1": "0.2",
+      "lbfgs_lr2": "0.1",
+      "lbfgs_n_iter1": "15",
+      "lbfgs_n_iter2": "15",
+      "lbfgs_probe_modes": "10"
+    },
+    "enabled": true
+  },
+  {
+    "name": "02_levitan square RZP",
+    "path": "/net/micdata/data2/12IDC/2026_Data/2026_2/02_levitan/ptychi_recons/S0006/Ndp512_LSQML_c150_m0.5_gaussian_p10_cp_mm_opr3_ic_pc1_f_ul2/recon_Niter1000.h5",
+    "params": {
+      "method": "CG",
+      "obj_shape": "100",
+      "obj_init": "flat",
+      "cg_n_iter": "400",
+      "cg_clear_every": "30",
+      "cg_loss_target": "1.5e4",
+      "cg_probe_modes": "6",
+      "lbfgs_reg_factor1": "1e-4",
+      "lbfgs_reg_factor2_lo": "1e-7",
+      "lbfgs_reg_factor2_hi": "1e-5",
+      "lbfgs_lr1": "0.2",
+      "lbfgs_lr2": "0.1",
+      "lbfgs_n_iter1": "20",
+      "lbfgs_n_iter2": "50",
+      "lbfgs_probe_modes": "10"
+    },
+    "enabled": true
+  },
+  {
+    "name": "01_ptycho square RZP",
+    "path": "/net/micdata/data2/12IDC/2026_Data/2026_2/01_ptycho/ptychi_recons/S0207/Ndp512_LSQML_c150_m0.5_gaussian_p10_cp_mm_opr3_ic_pc1_f_ul2/recon_Niter500.h5",
+    "params": {},
+    "enabled": true
+  },
+  {
+    "name": "01_ptycho circle RZP",
+    "path": "/net/micdata/data2/12IDC/2026_Data/2026_2/01_ptycho/ptychi_recons/S0206/Ndp512_LSQML_c150_m0.5_gaussian_p10_cp_mm_opr3_ic_pc1_f_ul2/recon_Niter500.h5",
+    "params": {
+      "method": "LBFGS",
+      "obj_shape": "220",
+      "obj_init": "flat",
+      "cg_n_iter": "400",
+      "cg_clear_every": "30",
+      "cg_loss_target": "1.4e4",
+      "cg_probe_modes": "6",
+      "lbfgs_reg_factor1": "1e-4",
+      "lbfgs_reg_factor2_lo": "1e-7",
+      "lbfgs_reg_factor2_hi": "1e-5",
+      "lbfgs_lr1": "0.2",
+      "lbfgs_lr2": "0.1",
+      "lbfgs_n_iter1": "20",
+      "lbfgs_n_iter2": "25",
+      "lbfgs_probe_modes": "10"
+    },
+    "enabled": true
+  },
+  {
+    "name": "piezo_test_cRZP",
+    "path": "/net/micdata/data2/12IDC/2026_Data/2026_3/01_piezo_test/ptychi_recons/S0019/Ndp1024_LSQML_c20_m0.5_gaussian_p10_cp_mm_opr3_ic_pc1_f_ul2/recon_Niter400.h5",
+    "params": {},
+    "enabled": true
+  },
+  {
+    "name": "piezo_test_sRZP",
+    "path": "/net/micdata/data2/12IDC/2026_Data/2026_3/01_piezo_test/ptychi_recons/S0009/Ndp1024_LSQML_c20_m0.5_gaussian_p10_cp_mm_opr3_ic_pc1_f_ul2/recon_Niter200.h5",
+    "params": {},
+    "enabled": true
+  }
+]

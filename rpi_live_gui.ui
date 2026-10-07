@@ -66,16 +66,25 @@
              </layout>
             </item>
             <item row="1" column="0">
-             <widget class="QLabel" name="label_probe_name">
+             <widget class="QLabel" name="label_probe_list">
               <property name="text">
-               <string>Probe name:</string>
+               <string>Probes:</string>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
               </property>
              </widget>
             </item>
             <item row="1" column="1">
-             <widget class="QLineEdit" name="probe_name_edit">
-              <property name="placeholderText">
-               <string>user-defined probe name</string>
+             <widget class="QListWidget" name="probe_list_widget">
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>130</height>
+               </size>
+              </property>
+              <property name="toolTip">
+               <string>Registered probes. Bold = currently in use. Greyed = not loaded from disk yet (use &quot;Setup Initial Probes and Geometry&quot; → &quot;Load registered probes&quot;). Click a loaded probe to switch to it.</string>
               </property>
              </widget>
             </item>
@@ -188,6 +197,41 @@
                </widget>
               </item>
               <item>
+               <widget class="QLabel" name="label_h5_stride">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="text">
+                 <string>Analyze every:</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QSpinBox" name="h5_stride_spin">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="toolTip">
+                 <string>Analyze only every k-th pattern in the file. 1 = every image (default).</string>
+                </property>
+                <property name="prefix">
+                 <string/>
+                </property>
+                <property name="suffix">
+                 <string> th image</string>
+                </property>
+                <property name="minimum">
+                 <number>1</number>
+                </property>
+                <property name="maximum">
+                 <number>9999</number>
+                </property>
+                <property name="value">
+                 <number>1</number>
+                </property>
+               </widget>
+              </item>
+              <item>
                <spacer name="h5_start_spacer">
                 <property name="orientation">
                  <enum>Qt::Horizontal</enum>
@@ -232,115 +276,23 @@
          <item>
           <layout class="QHBoxLayout" name="beamdet_hl">
            <item>
-            <widget class="QGroupBox" name="beamline_group">
-             <property name="title">
-              <string>Beamline</string>
-             </property>
-             <layout class="QFormLayout" name="beamline_form">
-              <item row="0" column="0">
-               <widget class="QLabel" name="label_energy">
-                <property name="text">
-                 <string>Energy (keV):</string>
-                </property>
-               </widget>
-              </item>
-              <item row="0" column="1">
-               <widget class="QDoubleSpinBox" name="energy_kev_spin">
-                <property name="decimals">
-                 <number>3</number>
-                </property>
-                <property name="minimum">
-                 <double>0.100000000000000</double>
-                </property>
-                <property name="maximum">
-                 <double>100.000000000000000</double>
-                </property>
-                <property name="singleStep">
-                 <double>0.100000000000000</double>
-                </property>
-                <property name="value">
-                 <double>12.000000000000000</double>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="0">
-               <widget class="QLabel" name="label_detdist">
-                <property name="text">
-                 <string>Det. distance (m):</string>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="1">
-               <widget class="QDoubleSpinBox" name="detector_dist_spin">
-                <property name="decimals">
-                 <number>3</number>
-                </property>
-                <property name="minimum">
-                 <double>0.010000000000000</double>
-                </property>
-                <property name="maximum">
-                 <double>10.000000000000000</double>
-                </property>
-                <property name="singleStep">
-                 <double>0.010000000000000</double>
-                </property>
-                <property name="value">
-                 <double>2.000000000000000</double>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
-           <item>
             <widget class="QGroupBox" name="detector_group">
              <property name="title">
               <string>Detector</string>
              </property>
              <layout class="QFormLayout" name="detector_form">
               <item row="0" column="0">
-               <widget class="QLabel" name="label_bcy">
-                <property name="text">
-                 <string>Beam center Y:</string>
-                </property>
-               </widget>
-              </item>
-              <item row="0" column="1">
-               <widget class="QSpinBox" name="beam_cy_spin">
-                <property name="maximum">
-                 <number>9999</number>
-                </property>
-                <property name="value">
-                 <number>512</number>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="0">
-               <widget class="QLabel" name="label_bcx">
-                <property name="text">
-                 <string>Beam center X:</string>
-                </property>
-               </widget>
-              </item>
-              <item row="1" column="1">
-               <widget class="QSpinBox" name="beam_cx_spin">
-                <property name="maximum">
-                 <number>9999</number>
-                </property>
-                <property name="value">
-                 <number>512</number>
-                </property>
-               </widget>
-              </item>
-              <item row="2" column="0">
                <widget class="QLabel" name="label_cropN">
                 <property name="text">
                  <string>Crop N:</string>
                 </property>
                </widget>
               </item>
-              <item row="2" column="1">
+              <item row="0" column="1">
                <widget class="QSpinBox" name="crop_N_spin">
+                <property name="toolTip">
+                 <string>Detector crop size. Unlike energy / detector distance / beam centre, this is a per-run choice and is not part of the exported JSON config.</string>
+                </property>
                 <property name="minimum">
                  <number>64</number>
                 </property>
@@ -353,6 +305,17 @@
                </widget>
               </item>
              </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="geometry_hint_label">
+             <property name="text">
+              <string>Energy, detector distance and beam centre
+are set in &quot;Setup Initial Probes and Geometry&quot;.</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
             </widget>
            </item>
           </layout>
@@ -369,9 +332,26 @@
                <widget class="QComboBox" name="algo_combo"/>
               </item>
               <item>
+               <widget class="QComboBox" name="res_mode_combo">
+                <property name="toolTip">
+                 <string>Selects which of the two stored object shapes is used. Edit both in &quot;Setup parameters…&quot;.</string>
+                </property>
+               </widget>
+              </item>
+              <item>
                <widget class="QPushButton" name="setup_params_btn">
                 <property name="text">
                  <string>Setup parameters…</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="propagate_probe_btn">
+                <property name="toolTip">
+                 <string>Open the probe propagation window. The distance can be changed while a reconstruction is running; the new probe is picked up before the next frame.</string>
+                </property>
+                <property name="text">
+                 <string>Propagate probe…</string>
                 </property>
                </widget>
               </item>
@@ -463,66 +443,85 @@
            <property name="title">
             <string>Display</string>
            </property>
-           <layout class="QVBoxLayout" name="display_vl">
-            <item>
-             <layout class="QHBoxLayout" name="ramp_hl">
-              <item>
-               <widget class="QCheckBox" name="unwrap_check">
-                <property name="text">
-                 <string>Unwrap phase</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QCheckBox" name="ramp_check">
-                <property name="text">
-                 <string>Remove phase ramp</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QLabel" name="label_ramp_radius">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="text">
-                 <string>Radius (px):</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QSpinBox" name="ramp_radius_spin">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="specialValueText">
-                 <string>All</string>
-                </property>
-                <property name="minimum">
-                 <number>0</number>
-                </property>
-                <property name="maximum">
-                 <number>9999</number>
-                </property>
-                <property name="value">
-                 <number>0</number>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <spacer name="ramp_spacer">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
-                 <size>
-                  <width>40</width>
-                  <height>0</height>
-                 </size>
-                </property>
-               </spacer>
-              </item>
-             </layout>
+           <layout class="QGridLayout" name="display_grid">
+            <item row="0" column="0">
+             <widget class="QCheckBox" name="unwrap_check">
+              <property name="toolTip">
+               <string>Unwrap the phase inside the illuminated area only; pixels outside are left untouched.</string>
+              </property>
+              <property name="text">
+               <string>Unwrap phase</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QCheckBox" name="ramp_check">
+              <property name="toolTip">
+               <string>Fit and subtract a linear phase ramp using only the illuminated area; pixels outside are left untouched.</string>
+              </property>
+              <property name="text">
+               <string>Remove phase ramp</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="2">
+             <widget class="QCheckBox" name="abs_check">
+              <property name="toolTip">
+               <string>Display np.abs(obj) instead of np.angle(obj).</string>
+              </property>
+              <property name="text">
+               <string>Show |obj| instead of phase</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QCheckBox" name="zoom_illum_check">
+              <property name="toolTip">
+               <string>Keep the view zoomed to the illuminated area of the active probe. Unchecking resets to the full object once, then leaves the view alone.</string>
+              </property>
+              <property name="text">
+               <string>Zoom on illuminated area</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QCheckBox" name="autolevel_check">
+              <property name="toolTip">
+               <string>Rescale the colour map to each new frame. Unchecking freezes the levels at their current values.</string>
+              </property>
+              <property name="text">
+               <string>Auto colorscale</string>
+              </property>
+              <property name="checked">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="2">
+             <widget class="QCheckBox" name="log_check">
+              <property name="enabled">
+               <bool>false</bool>
+              </property>
+              <property name="toolTip">
+               <string>log10 colour scale. Only meaningful for |obj| — np.angle() is signed, so this is disabled in phase mode.</string>
+              </property>
+              <property name="text">
+               <string>Log colorscale</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="3" rowspan="2">
+             <spacer name="display_spacer">
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>40</width>
+                <height>0</height>
+               </size>
+              </property>
+             </spacer>
             </item>
            </layout>
           </widget>
@@ -543,7 +542,7 @@
             <item row="0" column="1">
              <widget class="QPushButton" name="change_probe_btn">
               <property name="text">
-               <string>Set Probe Choice</string>
+               <string>Setup Initial Probes and Geometry</string>
               </property>
              </widget>
             </item>
@@ -556,8 +555,14 @@
             </item>
             <item row="1" column="1">
              <widget class="QPushButton" name="view_deque_btn">
+              <property name="toolTip">
+               <string>Show every frame in the deque as a grid in the main view, oldest (0) top-left to newest bottom-right.</string>
+              </property>
               <property name="text">
                <string>View Deque</string>
+              </property>
+              <property name="checkable">
+               <bool>true</bool>
               </property>
              </widget>
             </item>
@@ -571,8 +576,77 @@
               </property>
              </widget>
             </item>
+            <item row="3" column="0" colspan="2">
+             <widget class="QPushButton" name="accumulate_btn">
+              <property name="toolTip">
+               <string>Open the Object Accumulator: read stage positions alongside each frame and stitch the reconstructions into one large object.</string>
+              </property>
+              <property name="text">
+               <string>Object Accumulator…</string>
+              </property>
+             </widget>
+            </item>
            </layout>
           </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="bottom_hl">
+           <item>
+            <widget class="QLabel" name="label_font_size">
+             <property name="text">
+              <string>Font size:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QSpinBox" name="spinBox_fontSize">
+             <property name="toolTip">
+              <string>Point size for every window in this application.</string>
+             </property>
+             <property name="minimum">
+              <number>6</number>
+             </property>
+             <property name="maximum">
+              <number>24</number>
+             </property>
+             <property name="value">
+              <number>11</number>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="bottom_spacer">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>0</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QPushButton" name="exit_btn">
+             <property name="minimumSize">
+              <size>
+               <width>160</width>
+               <height>46</height>
+              </size>
+             </property>
+             <property name="toolTip">
+              <string>Save settings and quit. You will be offered the chance to export the current configuration to JSON.</string>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">color: white; background-color: #c0392b; font-weight: bold;</string>
+             </property>
+             <property name="text">
+              <string>EXIT</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
          </item>
          <item>
           <spacer name="leftSpacer">
