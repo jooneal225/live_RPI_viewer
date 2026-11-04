@@ -33,6 +33,9 @@ import so that the correct GPU is exposed as device 0.
 """
 from __future__ import annotations  # X | Y union syntax back to Python 3.7
 
+import os
+os.environ["PYQTGRAPH_QT_LIB"] = "PyQt5"
+
 # ── Set GPU before any torch/cdtools import ─────────────────────────────────
 import os
 import configparser as _cp

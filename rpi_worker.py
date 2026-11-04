@@ -126,9 +126,12 @@ class RPIWorkerBase(QThread):
         self._frame_counter   = 0
         self._last_plot_call_id = None
         self._step            = 'not started'
+        # 'H5 img i/N' while replaying an H5, else ''. Prefixed onto the
+        # status line so the pattern being reconstructed is always visible.
+        self._h5_tag          = ''
 
         # Optional hook, set by the Object Accumulator after construction:
-        #   position_reader(frame_index) -> (x, y)
+        #   position_reader(frame_index) -> (x, y) or (x, y, source_index)
         # It is called in this thread right after each diffraction pattern is
         # acquired, so a blocking pyepics .get() is fine here. frame_index is
         # the H5 pattern index in replay mode and None when reading from a PV,
@@ -285,6 +288,9 @@ class RPIWorkerBase(QThread):
                 pos_index = None        # H5 pattern index, for the position hook
                 if p['h5_mode']:
                     pos_index = _h5_idx % _n_h5_dp
+                    self._h5_tag = f'H5 img {pos_index}/{_n_h5_dp}'
+                    self.status_update.emit(
+                        f'{self._status_line1()}\n{self._h5_tag} | reading')
                     raw    = _h5_dset[pos_index].astype(np.float32)
                     _h5_idx += _h5_stride
                     self.raw_image_ready.emit(raw)
@@ -372,7 +378,8 @@ class RPIWorkerBase(QThread):
                 self.status_update.emit(
                     f'Average reconstruction time: {avg:.1f} s, '
                     f'last frame: {self._last_frame_s:.1f} s\n'
-                    f'Frame {self._frame_counter} complete | loss: {last_loss:.4g}'
+                    + (f'{self._h5_tag} | ' if self._h5_tag else '')
+                    + f'Frame {self._frame_counter} complete | loss: {last_loss:.4g}'
                 )
                 self._frame_counter += 1
 
@@ -389,14 +396,19 @@ class RPIWorkerBase(QThread):
 
     def _status(self, stage, report):
         """Emit a two-line status string to the GUI."""
+        # The H5 index leads the second line: the accumulator's monitor shows
+        # only that line, truncated, so anything after it may be cut off.
+        prefix = f'{self._h5_tag} | ' if self._h5_tag else ''
+        self.status_update.emit(
+            f'{self._status_line1()}\n{prefix}{stage}: {report}')
+
+    def _status_line1(self):
         n = self._frame_counter
         if n == 0:
-            line1 = 'Waiting for first frame…'
-        else:
-            avg   = self._total_time / n
-            line1 = (f'Average reconstruction time: {avg:.1f} s, '
-                     f'last frame: {self._last_frame_s:.1f} s')
-        self.status_update.emit(f'{line1}\n{stage}: {report}')
+            return 'Waiting for first frame…'
+        avg = self._total_time / n
+        return (f'Average reconstruction time: {avg:.1f} s, '
+                f'last frame: {self._last_frame_s:.1f} s')
 
     def _extra_summary(self, n_done):
         """Optional extra fields for the per-frame terminal summary line."""

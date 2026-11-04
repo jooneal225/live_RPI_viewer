@@ -48,8 +48,10 @@ from PyQt5 import uic
 from PyQt5.QtCore import (Qt, QEvent, QMutex, QThread, QTimer, QWaitCondition,
                           pyqtSignal)
 from PyQt5.QtWidgets import (
-    QActionGroup, QApplication, QDialog, QFileDialog, QInputDialog,
-    QLabel, QLayout, QMenuBar, QMessageBox, QSizePolicy, QVBoxLayout,
+    QActionGroup, QApplication, QComboBox, QDialog, QDialogButtonBox,
+    QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLayout,
+    QLineEdit, QMenuBar, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout,
+    QWidget,
 )
 
 from rpi_utils import (
@@ -113,6 +115,7 @@ _RECORD_COLUMNS = [
     'nominal_dx_px', 'nominal_dy_px',
     'final_dx_px', 'final_dy_px',
     'align_dx_px', 'align_dy_px',
+    'norm_offset_rad',
 ]
 
 # What to do with a frame whose alignment failed — the correction exceeded the
@@ -166,6 +169,14 @@ _MAX_CANVAS_BYTES = 2 * 1024 ** 3
 
 _PV_CONNECT_TIMEOUT_S = 3.0
 
+# Position file written alongside each scan; looked for next to the H5 being
+# replayed when the window opens.
+_POS_H5_GLOB = '*_para.hdf5'
+
+# Accumulated-position overlay on the object image.
+_POS_MARKER_SIZE  = 3
+_POS_MARKER_COLOR = 'r'
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # Position sources
@@ -203,6 +214,7 @@ class _PositionSource:
         self._ppx      = None
         self._ppy      = None
         self._counter  = 0
+        self._last_h5_index = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -280,16 +292,38 @@ class _PositionSource:
             h, v = self._read_h5(index)
         else:
             h, v = self._read_simulated(index)
+        h, v = self._transform(h, v)
+        return float(h), float(v)
 
-        h *= self.scale
-        v *= self.scale
+    def read_indexed(self, index=None):
+        """read(), plus the ppX/ppY index used (None unless an H5 source).
+
+        Used as the worker's position hook so the index travels with the
+        frame — read back later from the source, it could already belong to
+        the next frame."""
+        x, y = self.read(index)
+        return x, y, (self._last_h5_index if self.kind == 'h5' else None)
+
+    def read_all(self):
+        """Every position in an open H5 source, as (x_um, y_um) arrays with
+        the same scaling / inversion / swap as read()."""
+        if self.kind != 'h5' or self._ppx is None:
+            raise PositionSourceError('Only an open H5 source has a full '
+                                      'position list.')
+        return self._transform(self._ppx.copy(), self._ppy.copy())
+
+    def _transform(self, h, v):
+        """Raw units → microns, then inversion and axis swap. Works on
+        scalars and arrays alike."""
+        h = h * self.scale
+        v = v * self.scale
         if self.invert_h:
             h = -h
         if self.invert_v:
             v = -v
         if self.swap:
             h, v = v, h
-        return float(h), float(v)
+        return h, v
 
     def _read_epics(self):
         if self._pvs is None:
@@ -319,6 +353,7 @@ class _PositionSource:
             index = self._counter
             self._counter += 1
         i = int(index) % self._ppx.size
+        self._last_h5_index = i
         return self._ppx[i], self._ppy[i]
 
     def _read_simulated(self, index):
@@ -555,6 +590,7 @@ class ObjectAccumulatorWindow(QDialog):
         self._last_loss = float('nan')
         self._last_pos_um = None
         self._last_pos_px = None
+        self._last_pos_idx = None     # ppX/ppY index of the last position
         self._coverage = 'cover —'
         self._worker_status = ''
         self._frames_since_redraw = 0
@@ -566,6 +602,15 @@ class ObjectAccumulatorWindow(QDialog):
         self._render = _RenderWorker(self._data_mutex, self)
         self._render.rendered.connect(self._on_rendered)
         self._render.start()
+
+        # The stage-position controls live in their own dialog. Its widgets
+        # are aliased here so the rest of the window addresses them exactly
+        # as it did when they sat on the panel.
+        self._pos_dlg = _StagePositionsDialog(self)
+        for name in _StagePositionsDialog.WIDGETS:
+            setattr(self, name, getattr(self._pos_dlg, name))
+        self._pos_scatter_win = None   # Test-read plot of every H5 position
+        self._pos_autofound   = None   # *_para.hdf5 picked up at open, if any
 
         self.pos_source_combo.addItems(_SOURCE_LABELS)
         self.motor_units_combo.addItems(_UNIT_LABELS)
@@ -587,8 +632,15 @@ class ObjectAccumulatorWindow(QDialog):
         self._first_render = True
         self._cursor_proxy = pg.SignalProxy(
             vb.scene().sigMouseMoved, rateLimit=30, slot=self._on_cursor_moved)
+        self._pos_scatter = pg.ScatterPlotItem(
+            size=_POS_MARKER_SIZE, pen=None, brush=pg.mkBrush(_POS_MARKER_COLOR))
+        self._pos_scatter.setZValue(10)
+        self._pos_scatter.setVisible(self.show_positions_check.isChecked())
+        vb.addItem(self._pos_scatter)
 
         self._log('Ready. Tracebacks print to stdout.')
+        if self._pos_autofound:
+            self._log(f'Position H5: found {Path(self._pos_autofound).name}.')
 
     # ------------------------------------------------------------------ #
     # Layout / menu                                                       #
@@ -745,8 +797,10 @@ class ObjectAccumulatorWindow(QDialog):
         self.pos_source_combo.currentIndexChanged.connect(self._on_source_changed)
         self.accum_mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self._act_uint8.toggled.connect(self._on_tracker_dtype_changed)
+        self.setup_positions_btn.clicked.connect(self._on_setup_positions)
         self.pos_h5_browse_btn.clicked.connect(self._on_browse_pos_h5)
         self.test_read_btn.clicked.connect(self._on_test_read)
+        self.show_positions_check.toggled.connect(self._on_show_positions_toggled)
         self.size_x_um_spin.valueChanged.connect(self._update_canvas_info)
         self.size_y_um_spin.valueChanged.connect(self._update_canvas_info)
         self.start_btn.clicked.connect(self._on_start_stop)
@@ -875,11 +929,44 @@ class ObjectAccumulatorWindow(QDialog):
         dlg.setOption(QFileDialog.DontUseNativeDialog, True)
         dlg.setFileMode(QFileDialog.ExistingFile)
         dlg.setNameFilter('HDF5 (*.h5 *.hdf5)')
-        start = Path(self.pos_h5_file_edit.text().strip() or '.')
-        if start.parent.is_dir():
-            dlg.setDirectory(str(start.parent))
+        # The scan being replayed is the best guess at where its positions
+        # are; fall back to wherever the current position file lives.
+        start_dir = self._main_h5_dir()
+        if start_dir is None:
+            current = Path(self.pos_h5_file_edit.text().strip() or '.')
+            if current.parent.is_dir():
+                start_dir = current.parent
+        if start_dir is not None:
+            dlg.setDirectory(str(start_dir))
         if dlg.exec_():
             self.pos_h5_file_edit.setText(dlg.selectedFiles()[0])
+
+    def _main_h5_dir(self):
+        """Directory of the H5 the main panel is replaying, or None when it
+        is reading images from a PV."""
+        if not self._main_is_h5_replay():
+            return None
+        try:
+            text = self._main.h5_file_edit.text().strip()
+        except Exception:
+            return None
+        if not text:
+            return None
+        d = Path(text).expanduser().parent
+        return d if d.is_dir() else None
+
+    def _find_pos_h5(self):
+        """First *_para.hdf5 beside the H5 being replayed, or None."""
+        d = self._main_h5_dir()
+        if d is None:
+            return None
+        matches = sorted(d.glob(_POS_H5_GLOB))
+        return str(matches[0]) if matches else None
+
+    def _on_setup_positions(self):
+        self._pos_dlg.show()
+        self._pos_dlg.raise_()
+        self._pos_dlg.activateWindow()
 
     # ------------------------------------------------------------------ #
     # Settings (persisted in settings.ini [accumulator] by the main window) #
@@ -900,8 +987,15 @@ class ObjectAccumulatorWindow(QDialog):
         import configparser
         cfg = configparser.ConfigParser()
         cfg.read(self._ini_path())
+        # Settings handed back when an earlier accumulator window closed only
+        # reach settings.ini when the main window next saves, so they take
+        # precedence over the file — otherwise reopening brings back stale
+        # values.
+        handed_back = getattr(self._main, '_accum_settings', None) or {}
 
         def _get(key, fallback):
+            if key in handed_back:
+                return str(handed_back[key])
             return cfg.get('accumulator', key, fallback=fallback)
 
         # Images from an H5 replay almost always mean positions from an H5 too,
@@ -913,7 +1007,11 @@ class ObjectAccumulatorWindow(QDialog):
             else _SOURCES.index(default_source))
         self.h_motor_pv_edit.setText(_get('h_motor_pv', '12ideMCS1:m1.RBV'))
         self.v_motor_pv_edit.setText(_get('v_motor_pv', '12ideMCS1:m2.RBV'))
-        self.pos_h5_file_edit.setText(_get('pos_h5_file', ''))
+        # A position file sitting beside the scan being replayed beats any
+        # remembered one, which is usually from an earlier scan.
+        self._pos_autofound = self._find_pos_h5()
+        self.pos_h5_file_edit.setText(self._pos_autofound
+                                      or _get('pos_h5_file', ''))
         units = _get('units', _DEFAULT_UNITS)
         self.motor_units_combo.setCurrentIndex(
             _UNITS.index(units) if units in _UNITS else _UNITS.index(_DEFAULT_UNITS))
@@ -933,6 +1031,8 @@ class ObjectAccumulatorWindow(QDialog):
         self.zero_mean_check.setChecked(_get('zero_mean', 'true').lower() == 'true')
         self.recenter_check.setChecked(_get('recenter', 'false').lower() == 'true')
         self.align_check.setChecked(_get('align', 'false').lower() == 'true')
+        self.normalize_check.setChecked(
+            _get('normalize', 'false').lower() == 'true')
         self._align_limit_nm = float(_get('align_limit_nm',
                                           str(_DEFAULT_ALIGN_LIMIT_NM)))
         self._align_peak_min = float(_get('align_peak_min',
@@ -953,6 +1053,8 @@ class ObjectAccumulatorWindow(QDialog):
         ds = None if ds_raw.strip().lower() in ('auto', 'none', '') else int(ds_raw)
         self._ds_actions.get(ds, self._ds_actions[None]).setChecked(True)
         self.accum_autolevel_check.setChecked(_get('autolevel', 'true').lower() == 'true')
+        self.show_positions_check.setChecked(
+            _get('show_positions', 'false').lower() == 'true')
 
     def _main_is_h5_replay(self):
         try:
@@ -981,6 +1083,7 @@ class ObjectAccumulatorWindow(QDialog):
             'zero_mean':      str(self.zero_mean_check.isChecked()).lower(),
             'recenter':       str(self.recenter_check.isChecked()).lower(),
             'align':          str(self.align_check.isChecked()).lower(),
+            'normalize':      str(self.normalize_check.isChecked()).lower(),
             'align_limit_nm': str(self._align_limit_nm),
             'align_gate':     str(self._act_align_gate.isChecked()).lower(),
             'align_peak_min': str(self._align_peak_min),
@@ -992,6 +1095,7 @@ class ObjectAccumulatorWindow(QDialog):
             'downsample':     ('auto' if self._downsample_setting() is None
                                else str(self._downsample_setting())),
             'autolevel':      str(self.accum_autolevel_check.isChecked()).lower(),
+            'show_positions': str(self.show_positions_check.isChecked()).lower(),
         }
 
     # ------------------------------------------------------------------ #
@@ -1070,8 +1174,10 @@ class ObjectAccumulatorWindow(QDialog):
         if self._last_pos_um is not None:
             x, y = self._last_pos_um
             px = self._last_pos_px or (0, 0)
+            idx = self._last_pos_idx
             lines.append(f'pos   {x:+.3f}, {y:+.3f} um  '
-                         f'({px[0]:+d}, {px[1]:+d}) px')
+                         f'({px[0]:+d}, {px[1]:+d}) px'
+                         + (f'  H5 #{idx}' if idx is not None else ''))
         else:
             lines.append('pos   —')
         # self._coverage is refreshed by the render thread, never recomputed
@@ -1167,6 +1273,7 @@ class ObjectAccumulatorWindow(QDialog):
             pos = src.read(0)
             # Interrogate while still open — close() drops the loaded arrays.
             desc, detail = src.describe(), src.detail()
+            all_xy = src.read_all() if src.kind == 'h5' else None
         except PositionSourceError as exc:
             self._log(f'Test read FAILED: {exc}')
             return
@@ -1177,6 +1284,22 @@ class ObjectAccumulatorWindow(QDialog):
             src.close()
         self._log(f'Test read OK: {desc}',
                   detail + [f'first x={pos[0]:+.4f} um  y={pos[1]:+.4f} um'])
+        if all_xy is not None:
+            self._show_position_scatter(*all_xy, Path(src.h5_path).name)
+
+    def _show_position_scatter(self, x_um, y_um, title):
+        if self._pos_scatter_win is None:
+            self._pos_scatter_win = _PositionScatterWindow(self)
+            try:
+                from font_utils import apply_font_size_to_tree
+                apply_font_size_to_tree(self._pos_scatter_win,
+                                        self._main._current_font_size())
+            except Exception:
+                pass
+        self._pos_scatter_win.set_positions(x_um, y_um, title)
+        self._pos_scatter_win.show()
+        self._pos_scatter_win.raise_()
+        self._pos_scatter_win.activateWindow()
 
     # ------------------------------------------------------------------ #
     # Start / Stop                                                        #
@@ -1306,7 +1429,7 @@ class ObjectAccumulatorWindow(QDialog):
         self._warned_nothing = False
         self._decay_mask = None
         self._last_loss = float('nan')
-        self._last_pos_um = self._last_pos_px = None
+        self._last_pos_um = self._last_pos_px = self._last_pos_idx = None
         self._coverage = 'cover —'
         self._worker_status = ''
         self._frames_since_redraw = 0
@@ -1338,7 +1461,7 @@ class ObjectAccumulatorWindow(QDialog):
                 results_deque   = deque(maxlen=1),
                 parent          = self,
             )
-            self._worker.position_reader = self._source.read
+            self._worker.position_reader = self._source.read_indexed
             self._worker.frame_ready.connect(self._on_frame_ready)
             self._worker.status_update.connect(self._on_worker_status)
             self._worker.error_occurred.connect(self._on_worker_error)
@@ -1376,6 +1499,8 @@ class ObjectAccumulatorWindow(QDialog):
         # Fixed for the duration of a run
         for w in (self.positions_group, self.canvas_group):
             w.setEnabled(not running)
+        # The dialog may already be open; its controls freeze with the button.
+        self._pos_dlg.set_editable(not running)
         # The tracker dtype is baked into the allocation, so it is frozen too;
         # it lives in the Options menu rather than in canvas_group now.
         self._act_uint8.setEnabled(not running)
@@ -1446,6 +1571,7 @@ class ObjectAccumulatorWindow(QDialog):
             self._update_monitor()
             return
         self._last_pos_um = (float(pos[0]), float(pos[1]))
+        self._last_pos_idx = pos[2] if len(pos) > 2 else None
 
         # The first accepted frame defines the centre of the canvas.
         if self._origin_um is None:
@@ -1536,8 +1662,14 @@ class ObjectAccumulatorWindow(QDialog):
         sub_mask  = self._stamp_mask[tr0:tr0 + (sr1 - sr0), tc0:tc0 + (sc1 - sc0)]
         sub_phase = phase[tr0:tr0 + (sr1 - sr0), tc0:tc0 + (sc1 - sc0)]
 
+        norm_offset = 0.0
         self._data_mutex.lock()
         try:
+            if self.normalize_check.isChecked():
+                norm_offset = self._normalize_offset(
+                    sub_phase, sub_mask, sr0, sr1, sc0, sc1)
+                if norm_offset:
+                    sub_phase = sub_phase + np.float32(norm_offset)
             self._stamp(sub_phase, sub_mask, sr0, sr1, sc0, sc1)
         finally:
             self._data_mutex.unlock()
@@ -1551,6 +1683,7 @@ class ObjectAccumulatorWindow(QDialog):
             float(nom_dx_px), float(nom_dy_px),
             float(dx_px), float(dy_px),
             float(dx_px - nom_dx_px), float(dy_px - nom_dy_px),
+            norm_offset,
         ))
         self._n_accepted += 1
 
@@ -1563,6 +1696,23 @@ class ObjectAccumulatorWindow(QDialog):
             self._update_monitor(full_stats=True)
         else:
             self._update_monitor()
+
+    def _normalize_offset(self, phase, mask, r0, r1, c0, c1):
+        """Phase offset that brings a frame's mean onto the accumulator's.
+
+        Both means are taken over the same pixels: illuminated in the new
+        frame and already populated on the canvas. Returns 0.0 when there is
+        too little overlap to say anything — the first frame, or one landing
+        on fresh canvas. Call with _data_mutex held.
+        """
+        cnt = self._contrib[r0:r1, c0:c1]
+        overlap = mask & (cnt > 0)
+        if int(np.count_nonzero(overlap)) < _MIN_ALIGN_OVERLAP_PX:
+            return 0.0
+        acc = (self._obj_sum[r0:r1, c0:c1][overlap].astype(np.float64)
+               / cnt[overlap])
+        offset = float(acc.mean() - phase[overlap].astype(np.float64).mean())
+        return offset if np.isfinite(offset) else 0.0
 
     def _will_add_pixels(self, r0, c0, n):
         """Would stamping a frame here change anything?
@@ -1831,6 +1981,7 @@ class ObjectAccumulatorWindow(QDialog):
                 img, autoLevels=False, autoRange=self._first_render)
         self._first_render = False
         self._displayed_ds = payload.get('downsample', 1)
+        self._update_pos_scatter()
 
         self._coverage = (f'cover {payload["coverage"]:.1f}%'
                           f'  max {payload["max_weight"]:.3g}')
@@ -1839,6 +1990,31 @@ class ObjectAccumulatorWindow(QDialog):
         tracker = payload.get('tracker')
         if tracker is not None and self._tracker_win is not None:
             self._tracker_win.update_image(tracker, payload['tracker_levels'])
+
+    def _on_show_positions_toggled(self, checked):
+        self._pos_scatter.setVisible(checked)
+        self._update_pos_scatter()
+
+    def _update_pos_scatter(self):
+        """Mark the centre of every accumulated frame on the object image.
+
+        Drawn from the frame records' final placement, which already includes
+        any phase-correlation correction — with alignment off it is just the
+        motor position. Refreshed with each redraw, so it costs nothing while
+        hidden.
+        """
+        if not self.show_positions_check.isChecked():
+            return
+        if not self._records or self._anchor_rc is None:
+            self._pos_scatter.setData([], [])
+            return
+        rec = np.asarray(self._records, dtype=np.float64)
+        ar, ac = self._anchor_rc
+        ds = self._displayed_ds or 1
+        # Row-major image: x is the column, y the row, both in displayed
+        # (possibly downsampled) pixels.
+        self._pos_scatter.setData(x=(ac + rec[:, 8]) / ds,
+                                  y=(ar + rec[:, 9]) / ds)
 
     def _on_cursor_moved(self, event):
         pos = event[0]
@@ -1919,6 +2095,7 @@ class ObjectAccumulatorWindow(QDialog):
             'remove_ramp':    self.ramp_check.isChecked(),
             'zero_mean':      self.zero_mean_check.isChecked(),
             'align':          self.align_check.isChecked(),
+            'normalize_to_accumulator': self.normalize_check.isChecked(),
             'align_limit_nm': self._align_limit_nm,
             'align_gate':     self._act_align_gate.isChecked(),
             'align_peak_min': self._align_peak_min,
@@ -1995,6 +2172,7 @@ class ObjectAccumulatorWindow(QDialog):
                         'frame_records':        rec,
                         'positions_px_nominal': rec[:, 6:8],
                         'alignment_shift_px':   rec[:, 10:12],
+                        'normalization_offset_rad': rec[:, 12],
                         'frame_index':          rec[:, 0],
                         'source_index':         rec[:, 1],
                         'frame_timestamp':      rec[:, 2],
@@ -2050,6 +2228,10 @@ class ObjectAccumulatorWindow(QDialog):
         if self._tracker_win is not None:
             self._tracker_win.close()
             self._tracker_win = None
+        if self._pos_scatter_win is not None:
+            self._pos_scatter_win.close()
+            self._pos_scatter_win = None
+        self._pos_dlg.close()
         if self._source is not None:
             self._source.close()
         try:
@@ -2105,3 +2287,135 @@ class _TrackerWindow(QDialog):
     def closeEvent(self, event):
         self.closed.emit()
         super().closeEvent(event)
+
+
+class _StagePositionsDialog(QDialog):
+    """Where each frame's stage position comes from.
+
+    Non-modal, so the diagnostic log stays visible while test-reading. The
+    widgets are owned here but aliased onto ObjectAccumulatorWindow (see
+    WIDGETS), which remains the one place that reads and persists them.
+    """
+
+    WIDGETS = (
+        'label_pos_source', 'pos_source_combo',
+        'label_h_pv', 'h_motor_pv_edit',
+        'label_v_pv', 'v_motor_pv_edit',
+        'label_pos_h5', 'pos_h5_file_edit', 'pos_h5_browse_btn',
+        'label_motor_units', 'motor_units_combo',
+        'test_read_btn',
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('StagePositionsDialog')
+        self.setWindowTitle('Stage positions')
+        self.setModal(False)
+        self.setMinimumWidth(460)
+
+        def _named(widget, name):
+            widget.setObjectName(name)   # font_utils only reaches named widgets
+            setattr(self, name, widget)
+            return widget
+
+        self._body = _named(QWidget(), 'pos_dlg_body')
+        form = QFormLayout()
+        form.addRow(_named(QLabel('Source:'), 'label_pos_source'),
+                    _named(QComboBox(), 'pos_source_combo'))
+        self.pos_source_combo.setToolTip(
+            'Where each frame\'s stage position comes from. "Simulated" reads '
+            'no PVs at all and walks a deterministic raster — use it to '
+            'exercise the whole pipeline offline.')
+        form.addRow(_named(QLabel('Horizontal PV:'), 'label_h_pv'),
+                    _named(QLineEdit('12ideMCS1:m1.RBV'), 'h_motor_pv_edit'))
+        self.h_motor_pv_edit.setToolTip('Read-back PV for the horizontal stage.')
+        form.addRow(_named(QLabel('Vertical PV:'), 'label_v_pv'),
+                    _named(QLineEdit('12ideMCS1:m2.RBV'), 'v_motor_pv_edit'))
+        self.v_motor_pv_edit.setToolTip(
+            'Read-back PV for the vertical stage. The default here is a '
+            'placeholder — replace it with the real vertical motor.')
+
+        h5_row = QHBoxLayout()
+        h5_row.addWidget(_named(QLineEdit(), 'pos_h5_file_edit'))
+        self.pos_h5_file_edit.setPlaceholderText('H5 with ppX / ppY datasets…')
+        self.pos_h5_file_edit.setToolTip(
+            'H5 file holding the positions for an H5 pattern replay, in '
+            'datasets "ppX" (horizontal) and "ppY" (vertical). Indexed by the '
+            'same pattern index as the diffraction file. On opening, a '
+            f'{_POS_H5_GLOB} beside the replayed H5 is picked automatically.')
+        h5_row.addWidget(_named(QPushButton('...'), 'pos_h5_browse_btn'))
+        self.pos_h5_browse_btn.setMaximumWidth(34)
+        form.addRow(_named(QLabel('Position H5:'), 'label_pos_h5'), h5_row)
+
+        form.addRow(_named(QLabel('Position units:'), 'label_motor_units'),
+                    _named(QComboBox(), 'motor_units_combo'))
+        self.motor_units_combo.setToolTip(
+            'Units the PVs / ppX / ppY report in. Everything downstream works '
+            'in microns. Axis inversion and H/V swap live in the Options menu.')
+
+        body_vl = QVBoxLayout(self._body)
+        body_vl.setContentsMargins(0, 0, 0, 0)
+        body_vl.addLayout(form)
+        body_vl.addWidget(_named(QPushButton('Test position read'),
+                                 'test_read_btn'))
+        self.test_read_btn.setToolTip(
+            'Read the configured position source once, right now, and report '
+            'what came back. For an H5 source, also plot every position.')
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.setObjectName('pos_dlg_buttons')
+        buttons.rejected.connect(self.close)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._body)
+        layout.addWidget(buttons)
+
+    def set_editable(self, editable):
+        """Freeze the controls during a run, leaving Close usable."""
+        self._body.setEnabled(editable)
+
+
+class _PositionScatterWindow(QDialog):
+    """Every position in a position H5, as the accumulator will use them
+    (microns, after the unit / invert / swap options)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('PositionScatterWindow')
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.resize(640, 640)
+
+        layout = QVBoxLayout(self)
+        self._plot = pg.PlotWidget()
+        self._plot.setObjectName('pos_scatter_plot')
+        self._plot.setLabel('bottom', 'x', units='µm')
+        self._plot.setLabel('left', 'y (down)', units='µm')
+        self._plot.showGrid(x=True, y=True, alpha=0.3)
+        # Same orientation as the stitched image, where y grows downwards.
+        self._plot.invertY(True)
+        self._plot.setAspectLocked(True)
+        layout.addWidget(self._plot)
+
+        self._all = pg.ScatterPlotItem(size=4, pen=None,
+                                       brush=pg.mkBrush(70, 130, 220, 200))
+        # Where the scan starts, so its direction can be read off the plot.
+        self._first = pg.ScatterPlotItem(size=10, pen=pg.mkPen('k'),
+                                         brush=pg.mkBrush('g'), symbol='s')
+        self._plot.addItem(self._all)
+        self._plot.addItem(self._first)
+
+        self._info = QLabel('')
+        self._info.setObjectName('pos_scatter_info_label')
+        self._info.setStyleSheet('font-family: monospace;')
+        layout.addWidget(self._info)
+
+    def set_positions(self, x_um, y_um, title=''):
+        x = np.asarray(x_um, dtype=np.float64)
+        y = np.asarray(y_um, dtype=np.float64)
+        self.setWindowTitle(f'Positions — {title}' if title else 'Positions')
+        self._all.setData(x=x, y=y)
+        self._first.setData(x=x[:1], y=y[:1])
+        self._plot.autoRange()
+        self._info.setText(
+            f'n={x.size}   x [{x.min():+.3f}, {x.max():+.3f}] µm   '
+            f'y [{y.min():+.3f}, {y.max():+.3f}] µm   (green = first)')

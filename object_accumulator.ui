@@ -49,112 +49,12 @@
           </property>
           <layout class="QVBoxLayout" name="positions_vl">
            <item>
-            <layout class="QFormLayout" name="positions_form">
-             <item row="0" column="0">
-              <widget class="QLabel" name="label_pos_source">
-               <property name="text">
-                <string>Source:</string>
-               </property>
-              </widget>
-             </item>
-             <item row="0" column="1">
-              <widget class="QComboBox" name="pos_source_combo">
-               <property name="toolTip">
-                <string>Where each frame's stage position comes from. &quot;Simulated&quot; reads no PVs at all and walks a deterministic raster — use it to exercise the whole pipeline offline.</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="0">
-              <widget class="QLabel" name="label_h_pv">
-               <property name="text">
-                <string>Horizontal PV:</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="1">
-              <widget class="QLineEdit" name="h_motor_pv_edit">
-               <property name="toolTip">
-                <string>Read-back PV for the horizontal stage.</string>
-               </property>
-               <property name="text">
-                <string>12ideMCS1:m1.RBV</string>
-               </property>
-              </widget>
-             </item>
-             <item row="2" column="0">
-              <widget class="QLabel" name="label_v_pv">
-               <property name="text">
-                <string>Vertical PV:</string>
-               </property>
-              </widget>
-             </item>
-             <item row="2" column="1">
-              <widget class="QLineEdit" name="v_motor_pv_edit">
-               <property name="toolTip">
-                <string>Read-back PV for the vertical stage. The default here is a placeholder — replace it with the real vertical motor.</string>
-               </property>
-               <property name="text">
-                <string>12ideMCS1:m2.RBV</string>
-               </property>
-              </widget>
-             </item>
-             <item row="3" column="0">
-              <widget class="QLabel" name="label_pos_h5">
-               <property name="text">
-                <string>Position H5:</string>
-               </property>
-              </widget>
-             </item>
-             <item row="3" column="1">
-              <layout class="QHBoxLayout" name="pos_h5_hl">
-               <item>
-                <widget class="QLineEdit" name="pos_h5_file_edit">
-                 <property name="toolTip">
-                  <string>H5 file holding the positions for an H5 pattern replay, in datasets &quot;ppX&quot; (horizontal) and &quot;ppY&quot; (vertical). Indexed by the same pattern index as the diffraction file.</string>
-                 </property>
-                 <property name="placeholderText">
-                  <string>H5 with ppX / ppY datasets…</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QPushButton" name="pos_h5_browse_btn">
-                 <property name="maximumSize">
-                  <size>
-                   <width>34</width>
-                   <height>16777215</height>
-                  </size>
-                 </property>
-                 <property name="text">
-                  <string>...</string>
-                 </property>
-                </widget>
-               </item>
-              </layout>
-             </item>
-             <item row="4" column="0">
-              <widget class="QLabel" name="label_motor_units">
-               <property name="text">
-                <string>Position units:</string>
-               </property>
-              </widget>
-             </item>
-             <item row="4" column="1">
-              <widget class="QComboBox" name="motor_units_combo">
-               <property name="toolTip">
-                <string>Units the PVs / ppX / ppY report in. Everything downstream works in microns. Axis inversion and H/V swap live in the Options menu.</string>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </item>
-           <item>
-            <widget class="QPushButton" name="test_read_btn">
+            <widget class="QPushButton" name="setup_positions_btn">
              <property name="toolTip">
-              <string>Read the configured position source once, right now, and report what came back.</string>
+              <string>Choose where each frame's stage position comes from (EPICS PVs, an H5 file or a simulated raster), its units, and test-read it.</string>
              </property>
              <property name="text">
-              <string>Test position read</string>
+              <string>Setup Stage Positions</string>
              </property>
             </widget>
            </item>
@@ -376,6 +276,16 @@
             </widget>
            </item>
            <item>
+            <widget class="QCheckBox" name="normalize_check">
+             <property name="toolTip">
+              <string>Before stamping, shift each new frame's phase so its mean over the overlap with the existing object (pixels illuminated in the new frame and already populated on the canvas) matches the accumulator's mean there. Removes the piston step between a new tile and its neighbours. Applied after alignment; frames with too little overlap are stamped unchanged.</string>
+             </property>
+             <property name="text">
+              <string>Normalize to accumulator</string>
+             </property>
+            </widget>
+           </item>
+           <item>
             <widget class="QCheckBox" name="recenter_check">
              <property name="toolTip">
               <string>When &quot;Refresh object&quot; is pressed, also forget the reference position so the next accepted frame is placed at the anchor again. Off = the canvas keeps its original frame of reference.</string>
@@ -421,14 +331,28 @@
             </widget>
            </item>
            <item row="1" column="0" colspan="2">
-            <widget class="QCheckBox" name="accum_autolevel_check">
-             <property name="text">
-              <string>Auto colorscale</string>
-             </property>
-             <property name="checked">
-              <bool>true</bool>
-             </property>
-            </widget>
+            <layout class="QHBoxLayout" name="accum_display_checks_hl">
+             <item>
+              <widget class="QCheckBox" name="accum_autolevel_check">
+               <property name="text">
+                <string>Auto colorscale</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="show_positions_check">
+               <property name="toolTip">
+                <string>Overlay the position of every image accumulated so far (red dots). When phase-correlation alignment is on, these are the corrected positions.</string>
+               </property>
+               <property name="text">
+                <string>Show positions</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
            </item>
           </layout>
          </widget>
