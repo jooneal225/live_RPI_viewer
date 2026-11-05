@@ -53,6 +53,19 @@ _DTYPE_MAP = {
 }
 
 
+def _pv_timestamp(pv):
+    """The NTNDArray timeStamp as Unix-epoch seconds, or None if absent.
+
+    PVA's secondsPastEpoch counts from 1970, unlike Channel Access's 1990
+    epoch, so this compares directly with time.time() on a synced machine.
+    """
+    try:
+        ts = pv['timeStamp']
+        return ts['secondsPastEpoch'] + ts['nanoseconds'] * 1e-9
+    except Exception:
+        return None
+
+
 def _pv_to_image(pv):
     """Decode a PVA AreaDetector PvObject to a 2D numpy array (rows, cols)."""
     data_key = list(pv['value'][0].keys())[0]
@@ -131,13 +144,15 @@ class RPIWorkerBase(QThread):
         self._h5_tag          = ''
 
         # Optional hook, set by the Object Accumulator after construction:
-        #   position_reader(frame_index) -> (x, y) or (x, y, source_index)
+        #   position_reader(frame_index, frame_ts) -> (x, y) or (x, y, source_index)
         # It is called in this thread right after each diffraction pattern is
         # acquired, so a blocking pyepics .get() is fine here. frame_index is
         # the H5 pattern index in replay mode and None when reading from a PV,
         # which lets an H5-backed position source stay aligned with the
-        # patterns. The result lands in entry['position']; a failure lands in
-        # entry['position_error'] and does not stop the run.
+        # patterns. frame_ts is the PV's timeStamp in Unix-epoch seconds, or
+        # None in replay mode, so a timestamped source can pick the sample
+        # taken with the frame. The result lands in entry['position']; a
+        # failure lands in entry['position_error'] and does not stop the run.
         self.position_reader  = None
 
         # Mid-run probe swap (used by the "Propagate probe" window): the GUI
@@ -286,6 +301,7 @@ class RPIWorkerBase(QThread):
                 # 1. Acquire diffraction pattern
                 self._step = 'acquiring diffraction pattern'
                 pos_index = None        # H5 pattern index, for the position hook
+                frame_ts  = None        # detector timestamp, for the position hook
                 if p['h5_mode']:
                     pos_index = _h5_idx % _n_h5_dp
                     self._h5_tag = f'H5 img {pos_index}/{_n_h5_dp}'
@@ -321,6 +337,7 @@ class RPIWorkerBase(QThread):
                         time.sleep(0.05)
                         continue
                     self._last_plot_call_id = frame_id
+                    frame_ts = _pv_timestamp(pv_obj)
 
                     dp  = raw[y0:y1, x0:x1] * self._mask_crop
 
@@ -334,7 +351,7 @@ class RPIWorkerBase(QThread):
                 if self.position_reader is not None:
                     self._step = 'reading stage position'
                     try:
-                        position = self.position_reader(pos_index)
+                        position = self.position_reader(pos_index, frame_ts)
                     except Exception as exc:
                         position_error = f'{type(exc).__name__}: {exc}'
 
@@ -360,6 +377,7 @@ class RPIWorkerBase(QThread):
                     'frame_idx':    self._frame_counter,
                     'source_idx':   pos_index,
                     'timestamp':    time.time(),
+                    'detector_timestamp': frame_ts,
                     'probe_interp': self._probe_interp,
                     'raw_image':    raw if not p['h5_mode'] else None,
                     'position':       position,

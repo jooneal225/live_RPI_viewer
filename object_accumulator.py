@@ -25,9 +25,11 @@ How it fits together
     because Qt requires it.
 
 Debugging aids, since this is expected to need shaking out on the beamline:
-  * Three position sources, two of which touch no PVs at all — an H5 replay
-    reading "ppX"/"ppY" alongside an H5 pattern replay, and a fully synthetic
-    raster. The entire pipeline can be exercised offline.
+  * Four position sources: EPICS motor PVs, the quDIS interferometer over the
+    qds_bridge (matched to each frame by detector timestamp), and two that
+    touch no PVs at all — an H5 replay reading "ppX"/"ppY" alongside an H5
+    pattern replay, and a fully synthetic raster. The entire pipeline can be
+    exercised offline.
   * "Test position read" reports exactly what the configured source returns.
   * Per-frame failures are logged with a traceback and counted; the run
     continues.
@@ -64,15 +66,20 @@ from rpi_utils import (
     DEFAULT_FILL_FRACTION,
 )
 from rpi_worker import WORKER_CLASSES
+import qds_positions
 
 
 _UI_FILE = Path(__file__).parent / 'object_accumulator.ui'
 
 # Position-source combo entries → internal keys (index-aligned).
 _SOURCE_LABELS = ['EPICS motor PVs',
+                  'QDS interferometer (ch1 = H, ch2 = V)',
                   'H5 file (ppX / ppY)',
                   'Simulated — no PV reads']
-_SOURCES       = ['epics', 'h5', 'simulated']
+_SOURCES       = ['epics', 'qds', 'h5', 'simulated']
+
+# The interferometer reports nanometres; positions are handled in microns.
+_NM_TO_UM = 1.0e-3
 
 # Position-unit combo entries → multiplier onto microns (index-aligned).
 _UNIT_LABELS = ['µm', 'mm', 'm']
@@ -195,12 +202,19 @@ class _PositionSource:
 
     def __init__(self, kind, h_pv='', v_pv='', h5_path='', units='um',
                  invert_h=False, invert_v=False, swap=False,
-                 sim_step_um=1.0, sim_extent_um=(30.0, 30.0)):
+                 sim_step_um=1.0, sim_extent_um=(30.0, 30.0),
+                 qds_host=qds_positions.DEFAULT_HOST,
+                 qds_port=qds_positions.DEFAULT_PORT,
+                 qds_maxlen=qds_positions.DEFAULT_MAXLEN,
+                 qds_every_n=qds_positions.DEFAULT_EVERY_N,
+                 qds_offset_s=0.0):
         self.kind      = kind
         self.h_pv      = h_pv.strip()
         self.v_pv      = v_pv.strip()
         self.h5_path   = h5_path.strip()
-        self.scale     = _UNIT_TO_UM.get(units, 1.0)
+        # The interferometer always reports nm, whatever the units combo says.
+        self.scale     = (_NM_TO_UM if kind == 'qds'
+                          else _UNIT_TO_UM.get(units, 1.0))
         self.invert_h  = invert_h
         self.invert_v  = invert_v
         self.swap      = swap
@@ -216,12 +230,24 @@ class _PositionSource:
         self._counter  = 0
         self._last_h5_index = None
 
+        self.qds_host     = qds_host
+        self.qds_port     = int(qds_port)
+        self.qds_maxlen   = int(qds_maxlen)
+        self.qds_every_n  = int(qds_every_n)
+        # Seconds added to the detector timestamp before matching: the sample
+        # used is the one nearest to t_detector + offset.
+        self.qds_offset_s = float(qds_offset_s)
+        self._qds         = None
+        self._qds_last_dt = None    # t_match − target of the last match, s
+
     # -- lifecycle ----------------------------------------------------------
 
     def open(self):
         """Connect / open. Raises PositionSourceError with a usable message."""
         if self.kind == 'epics':
             self._open_epics()
+        elif self.kind == 'qds':
+            self._open_qds()
         elif self.kind == 'h5':
             self._open_h5()
         # 'simulated' needs nothing
@@ -248,6 +274,35 @@ class _PositionSource:
                 'Could not connect to position PV(s) within '
                 f'{_PV_CONNECT_TIMEOUT_S:g} s: ' + ', '.join(unreachable))
         self._pvs = pvs
+
+    def _open_qds(self):
+        if not qds_positions.QDS_AVAILABLE:
+            raise PositionSourceError(qds_positions.QDS_UNAVAILABLE_REASON)
+        qds = qds_positions.QDSHistory(self.qds_host, self.qds_port,
+                                       self.qds_maxlen, self.qds_every_n)
+        qds.start()
+        if not qds.wait_first(_PV_CONNECT_TIMEOUT_S):
+            qds.stop()
+            if qds.connect_error:
+                why = f'connect failed: {qds.connect_error}'
+            elif qds.untimed:
+                why = (f'{qds.untimed} sample(s) arrived without timestamps — '
+                       f'the publisher predates them; update and restart it')
+            else:
+                why = (f'no samples within {_PV_CONNECT_TIMEOUT_S:g} s. '
+                       f'{qds_positions.PUBLISHER_HINT}')
+            raise PositionSourceError(f'QDS bridge {qds.endpoint}: {why}')
+        self._qds = qds
+
+    def set_qds_maxlen(self, n):
+        self.qds_maxlen = int(n)
+        if self._qds is not None:
+            self._qds.set_maxlen(n)
+
+    def set_qds_every_n(self, n):
+        self.qds_every_n = int(n)
+        if self._qds is not None:
+            self._qds.set_every_n(n)
 
     def _open_h5(self):
         if not self.h5_path:
@@ -280,14 +335,21 @@ class _PositionSource:
     def close(self):
         self._pvs = None
         self._ppx = self._ppy = None
+        if self._qds is not None:
+            self._qds.stop()
+            self._qds = None
 
     # -- reading ------------------------------------------------------------
 
-    def read(self, index=None):
+    def read(self, index=None, frame_ts=None):
         """Return (x_um, y_um). `index` is the H5 pattern index, or None when
-        the images come from a PV. Raises PositionSourceError on failure."""
+        the images come from a PV. `frame_ts` is the detector timestamp in
+        Unix-epoch seconds, or None; only the QDS source uses it. Raises
+        PositionSourceError on failure."""
         if self.kind == 'epics':
             h, v = self._read_epics()
+        elif self.kind == 'qds':
+            h, v = self._read_qds(frame_ts)
         elif self.kind == 'h5':
             h, v = self._read_h5(index)
         else:
@@ -295,13 +357,13 @@ class _PositionSource:
         h, v = self._transform(h, v)
         return float(h), float(v)
 
-    def read_indexed(self, index=None):
+    def read_indexed(self, index=None, frame_ts=None):
         """read(), plus the ppX/ppY index used (None unless an H5 source).
 
         Used as the worker's position hook so the index travels with the
         frame — read back later from the source, it could already belong to
         the next frame."""
-        x, y = self.read(index)
+        x, y = self.read(index, frame_ts)
         return x, y, (self._last_h5_index if self.kind == 'h5' else None)
 
     def read_all(self):
@@ -343,6 +405,36 @@ class _PositionSource:
                     f'{pv.connected}).')
             out[axis] = float(value)
         return out['h'], out['v']
+
+    def _read_qds(self, frame_ts):
+        """The interferometer sample nearest frame_ts + offset, in nm. With no
+        frame_ts (H5 replay, a test read) there is nothing to match, so the
+        newest sample is used."""
+        if self._qds is None:
+            raise PositionSourceError('QDS bridge is not connected.')
+        if frame_ts is None:
+            newest = self._qds.newest()
+            if newest is None:
+                raise PositionSourceError('QDS history is empty.')
+            self._qds_last_dt = None
+            return newest[1], newest[2]
+        target = frame_ts + self.qds_offset_s
+        match = self._qds.closest(target)
+        if match is None:
+            raise PositionSourceError('QDS history is empty.')
+        t, h, v, is_oldest, n = match
+        self._qds_last_dt = t - target
+        if is_oldest:
+            n_stored, oldest, newest = self._qds.stats()
+            span = (f'{oldest - target:+.3f} .. {newest - target:+.3f} s'
+                    if n_stored else 'empty')
+            print(f'WARNING: QDS position match is the oldest of {n} stored '
+                  f'samples (history spans {span} around the frame), so the '
+                  f'right sample may already have been discarded. Lengthen '
+                  f'the QDS history, keep fewer samples, or check the '
+                  f'detector-position timestamp offset '
+                  f'({self.qds_offset_s:+g} s).', flush=True)
+        return h, v
 
     def _read_h5(self, index):
         if self._ppx is None:
@@ -386,6 +478,8 @@ class _PositionSource:
         """One short line naming the source."""
         if self.kind == 'epics':
             return f'EPICS {self.h_pv} / {self.v_pv}'
+        if self.kind == 'qds':
+            return f'QDS {self.qds_host}:{self.qds_port} ch1/ch2'
         if self.kind == 'h5':
             n = 0 if self._ppx is None else self._ppx.size
             return f'H5 ppX/ppY n={n}'
@@ -404,6 +498,18 @@ class _PositionSource:
                     '(ranges in raw file units)']
         if self.kind == 'epics':
             return [f'H  {self.h_pv}', f'V  {self.v_pv}']
+        if self.kind == 'qds':
+            if self._qds is None:
+                return ['not open']
+            n, _oldest, newest = self._qds.stats()
+            lines = [f'history {n}/{self._qds.maxlen}, every '
+                     f'{self._qds.every_n}, offset {self.qds_offset_s:+g} s']
+            if newest is not None:
+                lines.append(f'newest sample age '
+                             f'{qds_positions.age_s(newest) * 1e3:+.1f} ms')
+            if self._qds_last_dt is not None:
+                lines.append(f'last match dt {self._qds_last_dt * 1e3:+.1f} ms')
+            return lines
         return [f'step {self._sim_step:.3f} um, no PVs read']
 
 
@@ -574,6 +680,9 @@ class ObjectAccumulatorWindow(QDialog):
         self._fill_fraction = DEFAULT_FILL_FRACTION
         self._run_params    = None
         self._closing       = False
+        self._qds_maxlen    = qds_positions.DEFAULT_MAXLEN
+        self._qds_every_n   = qds_positions.DEFAULT_EVERY_N
+        self._qds_offset_s  = 0.0
 
         # Counters shown on the monitor label
         self._n_in = self._n_accepted = 0
@@ -613,6 +722,10 @@ class ObjectAccumulatorWindow(QDialog):
         self._pos_autofound   = None   # *_para.hdf5 picked up at open, if any
 
         self.pos_source_combo.addItems(_SOURCE_LABELS)
+        if not qds_positions.QDS_AVAILABLE:
+            item = self.pos_source_combo.model().item(_SOURCES.index('qds'))
+            item.setEnabled(False)
+            item.setToolTip(qds_positions.QDS_UNAVAILABLE_REASON)
         self.motor_units_combo.addItems(_UNIT_LABELS)
         self.accum_mode_combo.addItems(_MODE_LABELS)
         self.first_frame_combo.addItems(_ANCHOR_LABELS)
@@ -726,6 +839,25 @@ class ObjectAccumulatorWindow(QDialog):
             '&Swap H/V', 'Swap horizontal and vertical. Quick fix when the '
                          'stitch comes out transposed.')
         menu.addSeparator()
+
+        qds_menu = menu.addMenu('&QDS interferometer')
+        qds_menu.setObjectName('accum_qds_menu')
+        qds_menu.setToolTip('Settings for the QDS interferometer position '
+                            'source. Changes apply immediately, even mid-run.')
+        a = qds_menu.addAction('History &length…')
+        a.setToolTip('How many timestamped positions are kept to match '
+                     'frames against.')
+        a.triggered.connect(self._on_set_qds_maxlen)
+        a = qds_menu.addAction('Keep every &Nth position…')
+        a.setToolTip('Store only every Nth received position, so the history '
+                     'covers N times longer without growing.')
+        a.triggered.connect(self._on_set_qds_every_n)
+        a = qds_menu.addAction('Detector-position timestamp &offset…')
+        a.setToolTip('Seconds added to the detector timestamp before looking '
+                     'up the nearest position. Positive if the interferometer '
+                     'clock runs ahead of the detector IOC clock.')
+        a.triggered.connect(self._on_set_qds_offset)
+        menu.addSeparator()
         self._act_uint8 = _toggle(
             '&uint8 contribution tracker',
             'Store the tracker as uint8: 5 bytes per canvas pixel instead of '
@@ -820,9 +952,10 @@ class ObjectAccumulatorWindow(QDialog):
             w.setEnabled(is_epics)
         for w in (self.label_pos_h5, self.pos_h5_file_edit, self.pos_h5_browse_btn):
             w.setEnabled(is_h5)
-        # Simulated positions are generated in microns already.
+        # Simulated positions are generated in microns already, and the
+        # interferometer always reports nm.
         for w in (self.label_motor_units, self.motor_units_combo):
-            w.setEnabled(kind != 'simulated')
+            w.setEnabled(kind not in ('simulated', 'qds'))
 
     def _on_mode_changed(self):
         decaying = self._current_mode() == 'decay'
@@ -873,6 +1006,52 @@ class ObjectAccumulatorWindow(QDialog):
             return
         self._align_min_overlap = float(value) / 100.0
         self._log(f'Minimum overlap {value:g}%.')
+
+    def _running_qds_source(self):
+        """The open QDS source of the current run, or None."""
+        src = self._source
+        if src is not None and src.kind == 'qds' and src._qds is not None:
+            return src
+        return None
+
+    def _on_set_qds_maxlen(self):
+        value, ok = QInputDialog.getInt(
+            self, 'QDS history length',
+            'Number of timestamped positions to keep:',
+            self._qds_maxlen, 2, 100000)
+        if not ok:
+            return
+        self._qds_maxlen = int(value)
+        src = self._running_qds_source()
+        if src is not None:
+            src.set_qds_maxlen(value)
+        self._log(f'QDS history {value}.')
+
+    def _on_set_qds_every_n(self):
+        value, ok = QInputDialog.getInt(
+            self, 'QDS position decimation',
+            'Keep every Nth received position:',
+            self._qds_every_n, 1, 10000)
+        if not ok:
+            return
+        self._qds_every_n = int(value)
+        src = self._running_qds_source()
+        if src is not None:
+            src.set_qds_every_n(value)
+        self._log(f'QDS keep every {value}.')
+
+    def _on_set_qds_offset(self):
+        value, ok = QInputDialog.getDouble(
+            self, 'Detector-position timestamp offset',
+            'Use the position nearest to detector time + (s):',
+            self._qds_offset_s, -1000.0, 1000.0, 4)
+        if not ok:
+            return
+        self._qds_offset_s = float(value)
+        src = self._running_qds_source()
+        if src is not None:
+            src.qds_offset_s = self._qds_offset_s
+        self._log(f'QDS timestamp offset {value:+g} s.')
 
     def _align_fail_mode(self):
         a = self._align_fail_group.checkedAction()
@@ -1002,6 +1181,8 @@ class ObjectAccumulatorWindow(QDialog):
         # so that is the default pairing unless a source was saved before.
         default_source = 'h5' if self._main_is_h5_replay() else 'simulated'
         source = _get('source', default_source)
+        if source == 'qds' and not qds_positions.QDS_AVAILABLE:
+            source = default_source
         self.pos_source_combo.setCurrentIndex(
             _SOURCES.index(source) if source in _SOURCES
             else _SOURCES.index(default_source))
@@ -1055,6 +1236,11 @@ class ObjectAccumulatorWindow(QDialog):
         self.accum_autolevel_check.setChecked(_get('autolevel', 'true').lower() == 'true')
         self.show_positions_check.setChecked(
             _get('show_positions', 'false').lower() == 'true')
+        self._qds_maxlen = max(2, int(_get(
+            'qds_history_len', str(qds_positions.DEFAULT_MAXLEN))))
+        self._qds_every_n = max(1, int(_get(
+            'qds_every_n', str(qds_positions.DEFAULT_EVERY_N))))
+        self._qds_offset_s = float(_get('qds_ts_offset_s', '0.0'))
 
     def _main_is_h5_replay(self):
         try:
@@ -1096,6 +1282,9 @@ class ObjectAccumulatorWindow(QDialog):
                                else str(self._downsample_setting())),
             'autolevel':      str(self.accum_autolevel_check.isChecked()).lower(),
             'show_positions': str(self.show_positions_check.isChecked()).lower(),
+            'qds_history_len': str(self._qds_maxlen),
+            'qds_every_n':    str(self._qds_every_n),
+            'qds_ts_offset_s': str(self._qds_offset_s),
         }
 
     # ------------------------------------------------------------------ #
@@ -1258,6 +1447,9 @@ class ObjectAccumulatorWindow(QDialog):
             sim_step_um   = step_um,
             sim_extent_um = (self.size_x_um_spin.value(),
                              self.size_y_um_spin.value()),
+            qds_maxlen    = self._qds_maxlen,
+            qds_every_n   = self._qds_every_n,
+            qds_offset_s  = self._qds_offset_s,
         )
 
     def _on_test_read(self):
@@ -2323,9 +2515,12 @@ class _StagePositionsDialog(QDialog):
         form.addRow(_named(QLabel('Source:'), 'label_pos_source'),
                     _named(QComboBox(), 'pos_source_combo'))
         self.pos_source_combo.setToolTip(
-            'Where each frame\'s stage position comes from. "Simulated" reads '
-            'no PVs at all and walks a deterministic raster — use it to '
-            'exercise the whole pipeline offline.')
+            'Where each frame\'s stage position comes from. "QDS '
+            'interferometer" picks, from a short history streamed by the '
+            'qds_bridge, the position nearest the detector frame\'s '
+            'timestamp (settings under Options ▸ QDS interferometer). '
+            '"Simulated" reads no PVs at all and walks a deterministic raster '
+            '— use it to exercise the whole pipeline offline.')
         form.addRow(_named(QLabel('Horizontal PV:'), 'label_h_pv'),
                     _named(QLineEdit('12ideMCS1:m1.RBV'), 'h_motor_pv_edit'))
         self.h_motor_pv_edit.setToolTip('Read-back PV for the horizontal stage.')
