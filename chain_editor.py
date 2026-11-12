@@ -79,7 +79,7 @@ class ChainEditor(QDialog):
         self.n_modes_spin.setSpecialValueText('All')
         self.n_modes_spin.setToolTip(
             'Probe modes used by every step (0 = all). LBFGS Incoh Obj steps '
-            'also use this many object modes.')
+            'always use 2 object modes.')
         self.crop_spin = _named(QSpinBox(), 'chain_crop_spin')
         self.crop_spin.setRange(*COMMON_RANGES['crop_N'])
         self.crop_spin.setSingleStep(2)

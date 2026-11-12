@@ -6,12 +6,13 @@ object (and probe) to the next:
 
   * CG          — the conjugate-gradient backend
   * LSQML       — the ptychi LSQML backend
-  * LBFGS_INCOH — cdtools LBFGS with an incoherent object of N modes
-                  (N = probe modes), regularized as [mode 0, other modes]
+  * LBFGS_INCOH — cdtools LBFGS with an incoherent object of 2 modes,
+                  regularized as [mode 0, mode 1]
   * LBFGS       — cdtools LBFGS with a single coherent object
 
-The standalone two-stage LBFGS method is LBFGS_INCOH [reg1, reg1] followed by
-LBFGS_INCOH [reg2_lo, reg2_hi].
+The standalone two-stage LBFGS method, which uses one object mode per probe
+mode, is LBFGS_INCOH [reg1, reg1] followed by LBFGS_INCOH [reg2_lo, reg2_hi]
+when the probe has 2 modes.
 
 Each step is a plain dict holding only the keys its algorithm uses (see
 STEP_FIELDS). The editor shows it as one table row (COLUMNS); the JSON file
@@ -69,8 +70,8 @@ COLUMN_TOOLTIPS = {
     'n_iter':       'Iterations (LSQML: epochs) in this step.',
     'step_size':    'LBFGS: learning rate. LSQML: object step-size scaler. '
                     'CG computes its own step.',
-    'reg':          'LBFGS Incoh Obj: "main, others" — L2 regularization of '
-                    'object mode 0 and of the other modes.\n'
+    'reg':          'LBFGS Incoh Obj: "main, second" — L2 regularization of '
+                    'object mode 0 and of object mode 1 (always 2 modes).\n'
                     'LBFGS: one value for the single object mode.',
     'probe_update': 'From the first iteration of this step. '
                     'LBFGS: off / weights / full. LSQML: off / full.\n'
@@ -135,11 +136,11 @@ def check_field(algo, key, value):
             if len(parts) == 1:
                 parts = parts * 2       # one value = same for every mode
             if len(parts) != 2:
-                return None, 'needs two values: "main, others"'
+                return None, 'needs two values: "main, second"'
             try:
                 vals = [float(x) for x in parts]
             except (TypeError, ValueError):
-                return None, 'needs two numbers: "main, others"'
+                return None, 'needs two numbers: "main, second"'
             if any(x < 0 for x in vals):
                 return None, 'values must be ≥ 0'
             return vals, None

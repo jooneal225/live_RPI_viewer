@@ -693,7 +693,9 @@ class CGWorker(RPIWorkerBase):
         # mid-run swap, via _on_probe_changed)
         self._step = 'moving probe and mask to GPU'
         self._on_probe_changed()
-        self._mask_t  = t.tensor(self._mask_crop, device=device)
+        # fftshift like sqrtPattern: forward() leaves zero frequency in the
+        # corner, so the mask must be in that layout to cover the right pixels.
+        self._mask_t  = t.tensor(np.fft.fftshift(self._mask_crop), device=device)
 
         self._n_iter      = p['n_iter']
         self._clear_every = p['clear_every']
@@ -1084,14 +1086,20 @@ def _fourier_shift(obj, d):
                         axes=(-2, -1)).astype(np.complex64)
 
 
+# Object modes of a chain's LBFGS Incoh Obj step, whatever the probe's mode
+# count (the standalone LBFGS backend uses one object mode per probe mode).
+_INCOH_OBJ_MODES = 2
+
+
 class ChainWorker(RPIWorkerBase):
     """A custom chain of CG / LSQML / LBFGS steps (see rpi_chain.py).
 
     Every frame runs params['chain_steps'] in order. The first step starts
     from obj_init exactly as its standalone backend would, so a one-row chain
-    reproduces that backend; each later step starts from the object and probe
-    the previous one ended with. LBFGS Incoh Obj uses N_modes object modes,
-    every other step one (see _match_obj_modes).
+    reproduces that backend (for LBFGS, when the probe has 2 modes); each
+    later step starts from the object and probe the previous one ended with.
+    LBFGS Incoh Obj uses _INCOH_OBJ_MODES object modes, every other step one
+    (see _match_obj_modes).
 
     The three backends Fourier-interpolate the object onto the probe grid
     but scale and place it differently, so the same array gives different
@@ -1111,7 +1119,9 @@ class ChainWorker(RPIWorkerBase):
         cg_iters = [s['n_iter'] for s in self._steps if s['algo'] == 'CG']
         if cg_iters:
             self._step = 'moving mask to GPU'
-            self._mask_t   = t.tensor(self._mask_crop, device=self._device)
+            # fftshifted to match sqrtPattern, as in CGWorker
+            self._mask_t   = t.tensor(np.fft.fftshift(self._mask_crop),
+                                      device=self._device)
             # Shared by every CG step; each restarts its iteration count at 0.
             self._loss_buf = t.zeros(max(cg_iters), device=self._device)
 
@@ -1321,7 +1331,7 @@ class ChainWorker(RPIWorkerBase):
     def _step_lbfgs(self, s, k, tag, dp, obj, probe):
         device  = self._device
         incoh   = s['algo'] == 'LBFGS_INCOH'
-        n_modes = self._N_modes if incoh else 1
+        n_modes = _INCOH_OBJ_MODES if incoh else 1
         # cdtools' regularizer: factors[0] on object mode 0, factors[1] on
         # the others (unused with a single mode).
         reg = list(s['reg']) if incoh else [s['reg'], s['reg']]
