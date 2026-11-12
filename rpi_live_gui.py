@@ -222,7 +222,6 @@ class MainWindow(QMainWindow):
         self._mouse_rc          = None   # (row, col) under the cursor, or None
 
         # Display state
-        self._frozen_levels     = None   # (lo, hi) while auto-colorscale is off
         self._deque_label_items = []     # pg.TextItems overlaying the deque mosaic
 
         # Build the RPI parameter widgets + the non-blocking parameters window,
@@ -1600,15 +1599,8 @@ class MainWindow(QMainWindow):
         self._rerender_last()
 
     def _on_autolevel_toggled(self, checked):
-        if checked:
-            self._frozen_levels = None
-        else:
-            # Freeze at whatever is on screen right now.
-            try:
-                lo, hi = self.image_view.getLevels()
-                self._frozen_levels = (float(lo), float(hi))
-            except Exception:
-                self._frozen_levels = None
+        # Turning it off holds whatever is on screen, including any later
+        # histogram drags: pg_image_tools leaves the levels alone then.
         self._rerender_last()
 
     def _on_zoom_illum_toggled(self, checked):
@@ -1945,21 +1937,19 @@ class MainWindow(QMainWindow):
         if self.log_check.isChecked() and self.abs_check.isChecked():
             disp = np.log10(np.maximum(img, _LOG_FLOOR))
 
-        # Levels are always computed here rather than via autoLevels=True:
+        # Auto levels are computed here rather than via autoLevels=True:
         # the deque mosaic pads unfilled cells with NaN, which autoLevels
-        # propagates into an all-NaN range.
+        # propagates into an all-NaN range. With auto off, levels stays None
+        # and pg_image_tools holds the current levels and histogram view.
         levels = None
-        if self.autolevel_check.isChecked():
-            if np.isfinite(disp).any():
-                levels = (float(np.nanmin(disp)), float(np.nanmax(disp)))
-        else:
-            levels = self._frozen_levels
+        if self.autolevel_check.isChecked() and np.isfinite(disp).any():
+            levels = (float(np.nanmin(disp)), float(np.nanmax(disp)))
 
         # pg_image_tools works in col-major (image[x, y]) whatever the global
         # imageAxisOrder, so hand it data[row, col] transposed.
         self.image_plot.set_image(disp.T, pixel_size_m=self._last_pixel_size_m or 1.0)
         if levels is not None:
-            self.image_view.setLevels(*levels)
+            self.image_plot.set_levels(*levels)
 
         self._last_display_img = img   # un-logged, so the readout stays honest
         self._update_pixel_info()
@@ -2490,7 +2480,7 @@ class _PVImageViewer(QDialog):
             display = img
         self._plot.set_image(display.T, autoRange=True if self._first_image else None)
         if self._first_image or reset_levels:
-            self._iv.autoLevels()
+            self._plot.auto_levels()
         self._first_image = False
         self._update_overlays(img.shape)
 

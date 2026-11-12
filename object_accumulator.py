@@ -2310,7 +2310,7 @@ class ObjectAccumulatorWindow(QDialog):
             img.T, pixel_size_m=(self._res_rpi_m or 1.0) * self._displayed_ds,
             autoRange=True if self._first_render else None)
         if self.accum_autolevel_check.isChecked():
-            self.accum_image_view.setLevels(*payload['levels'])
+            self.accum_plot.set_levels(*payload['levels'])
         self._first_render = False
         self._update_pos_scatter()
 
@@ -2618,7 +2618,7 @@ class _TrackerWindow(QDialog):
             return
         self._plot.set_image(tracker.T, autoRange=True if self._first else None)
         if not self._plot.action_auto_colorscale.isChecked():
-            self._iv.setLevels(*(levels or (0.0, 1.0)))
+            self._plot.set_levels(*(levels or (0.0, 1.0)))
         self._first = False
         hi = levels[1] if levels else float(tracker.max())
         self._info.setText(

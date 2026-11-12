@@ -514,11 +514,15 @@ class ImagePlotWidget(QtWidgets.QWidget):
             floor = float(positive.min()) if positive.size else np.finfo(np.float32).tiny
             data = np.log10(np.clip(mag, a_min=floor, a_max=None))
 
-        auto_colorscale = self.action_auto_colorscale.isChecked()
+        # With Auto colorscale off, both the levels and the histogram's
+        # zoom/pan stay wherever they are -- except on the very first image,
+        # which has no previous levels to hold.
+        auto_colorscale = self.action_auto_colorscale.isChecked() or not self._colorbar_added
         # ImageView's own autoRange kwarg is unreliable once a view has
         # already been panned/zoomed once, so drive the reset ourselves
         # (same reasoning as _apply_tracked_zoom driving Track Zoom itself).
-        self.pg_view.setImage(data, autoLevels=auto_colorscale, autoRange=False)
+        self.pg_view.setImage(data, autoLevels=auto_colorscale, autoRange=False,
+                              autoHistogramRange=auto_colorscale)
         if autoRange:
             self.pg_view.getView().autoRange()
 
@@ -549,8 +553,23 @@ class ImagePlotWidget(QtWidgets.QWidget):
         if hi <= lo:
             hi = lo + 1.0   # a flat image still needs a non-empty range
 
+        self.set_levels(lo, hi)
+
+    def set_levels(self, lo, hi):
+        """
+        Set the color levels and fit the histogram to them.
+
+        For hosts that compute their own levels with Auto colorscale off:
+        ``image_view.setLevels()`` alone would leave the histogram's zoom/pan
+        where it was, now that it no longer follows each new image.
+        """
         self.pg_view.ui.histogram.setHistogramRange(lo, hi)
         self.pg_view.setLevels(lo, hi)
+
+    def auto_levels(self):
+        """One-off: fit the levels and histogram to the image on screen."""
+        if self.pg_view.image is not None:
+            self._sync_levels(self.pg_view.image)
 
     def set_title(self, text):
         """Set the title label, eliding each line in the middle. No-op without a label."""

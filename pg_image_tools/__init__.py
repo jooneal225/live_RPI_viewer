@@ -262,6 +262,12 @@ Extension points
     rather than through the comparison window. The two must have the same
     shape; it centre-crops them to a square itself.
 
+``set_levels(lo, hi)`` / ``auto_levels()``
+    With "Auto colorscale" off, a new image keeps the current levels and the
+    histogram's zoom/pan. Hosts that set levels themselves should use
+    ``set_levels``, which also fits the histogram to them; ``auto_levels()``
+    fits both to the image on screen, once.
+
 ``zoom_to_left_square()``, ``reset_zoom()``, ``set_view_range(**kwargs)``
     Zoom helpers. ``reset_zoom()`` is the programmatic form of "View All"; the
     last is a passthrough to ``ViewBox.setRange``.
