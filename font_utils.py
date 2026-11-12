@@ -7,11 +7,11 @@ copy's persisted size lives in live_RPI_viewer/settings.ini under
 [app] font_size rather than in the shared QSettings store, so the RPI viewer's
 font size is independent of the ptychoSAXS GUIs'.
 
-Kept dependency-free (only PyQt5) so it can be imported from any of this
+Kept dependency-free (only PyQt6) so it can be imported from any of this
 package's windows without dragging in torch/cdtools/pyqtgraph.
 """
 
-from PyQt5.QtWidgets import QWidget
+from PyQt6.QtWidgets import QWidget
 
 # Matches the pointsize baked into most of rpi_live_gui.ui's widgets.
 DEFAULT_FONT_SIZE = 11

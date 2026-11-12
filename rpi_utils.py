@@ -2,6 +2,7 @@
 Utility functions for RPI Live: dataset construction, probe loading, saving.
 """
 
+import bisect
 import os
 import sys
 import csv
@@ -13,7 +14,13 @@ from pathlib import Path
 import numpy as np
 import h5py
 import tifffile
+try:
+    import hdf5plugin   # noqa: F401 — registers LZ4/bitshuffle for raw detector frames
+except ImportError:
+    hdf5plugin = None
 from skimage.restoration import unwrap_phase
+
+from rpi_chain import recipe_tag
 
 # Optional: complex-aware interpolation from beamline library
 try:
@@ -108,6 +115,174 @@ def crop_mask(mask_full, beam_cy, beam_cx, crop_N):
     y0, y1 = beam_cy - half, beam_cy + half
     x0, x1 = beam_cx - half, beam_cx + half
     return mask_full[y0:y1, x0:x1].astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# H5 replay: preprocessed patterns or a raw detector master file
+# ---------------------------------------------------------------------------
+
+# A raw master file holds its frames as /entry/data00001, data00002, …
+# (1-indexed; the same names inside an /entry/data group are accepted too).
+# Each is one 2-D frame or a 3-D stack with the image index first.
+_RAW_DATA_RE = re.compile(r'^data(\d{5})$')
+_RAW_DATA_GROUPS = ('entry', 'entry/data')
+_RAW_POSITIONS = 'entry/sample/positions'
+_RAW_ZONE_PLATE = 'entry/instrument/zone_plate'
+
+OPTIC_TYPE_RULES = [
+    (r"srzp|square",     "square_RZP"),
+    (r"crzp|circle",     "circle_RZP"),
+    (r"trzp|triangle",   "triangle_RZP"),
+    (r"rzp|random",      "RZP"),
+    (r"zp|zone|regular", "regular_ZP"),
+]
+UNKNOWN_OPTIC = "unknown_optic"
+
+
+def classify_optic(text):
+    """The OPTIC_TYPE_RULES name of the first rule matching `text`
+    (case-insensitive), or UNKNOWN_OPTIC."""
+    text = str(text).lower()
+    for pattern, name in OPTIC_TYPE_RULES:
+        if re.search(pattern, text):
+            return name
+    return UNKNOWN_OPTIC
+
+
+def _raw_data_keys(f):
+    """Paths of a master file's frame datasets in index order; [] when the
+    file is not a raw master."""
+    for group in _RAW_DATA_GROUPS:
+        g = f.get(group)
+        if not isinstance(g, h5py.Group):
+            continue
+        numbered = sorted((int(m.group(1)), k) for k in g
+                          if (m := _RAW_DATA_RE.match(k)))
+        if numbered:
+            return [f'{group}/{k}' for _, k in numbered]
+    return []
+
+
+def is_raw_master(f):
+    """True for an open h5py file laid out as a raw master file rather than
+    preprocessed patterns ('dp')."""
+    return 'dp' not in f and bool(_raw_data_keys(f))
+
+
+class DPReader:
+    """Diffraction patterns from an H5 replay file, indexed 0..n-1.
+
+    Preprocessed files ('dp', already centred) are tried first, then a raw
+    master file, whose frames are full detector images that still need the
+    same crop around the beam centre as a PV image (is_raw tells which).
+    """
+
+    def __init__(self, path):
+        self._fh = h5py.File(path, 'r')
+        try:
+            if 'dp' in self._fh:
+                self._open_preprocessed()
+            else:
+                self._open_raw(path)
+        except Exception:
+            self._fh.close()
+            raise
+
+    def _open_preprocessed(self):
+        dset = self._fh['dp']                  # shape (N_dp, N, N)
+        self.is_raw      = False
+        self._dsets      = [dset]
+        self._starts     = [0]
+        self.n           = dset.shape[0]
+        self.frame_shape = tuple(dset.shape[-2:])
+
+    def _open_raw(self, path):
+        keys = _raw_data_keys(self._fh)
+        if not keys:
+            raise ValueError(
+                f'{path} has neither preprocessed patterns ("dp") nor raw '
+                f'frame datasets (/entry/data00001, …). Top-level keys: '
+                f'{list(self._fh.keys())}')
+        self.is_raw  = True
+        self._dsets  = []
+        self._starts = []
+        n = 0
+        for key in keys:
+            # A scan still being written links frame files before they exist;
+            # stop there so later indices still line up with the positions.
+            try:
+                dset = self._fh[key]
+            except (KeyError, OSError):
+                break
+            if dset.ndim not in (2, 3):
+                raise ValueError(f'{path}:/{key} has shape {dset.shape}; '
+                                 f'expected 2-D or 3-D.')
+            self._dsets.append(dset)
+            self._starts.append(n)
+            n += 1 if dset.ndim == 2 else dset.shape[0]
+        if n == 0:
+            raise OSError(f'{path}: none of the linked frame files could be '
+                          f'opened (first: /{keys[0]}).')
+        self.n           = n
+        self.frame_shape = tuple(self._dsets[0].shape[-2:])
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        i = int(i)
+        if not 0 <= i < self.n:
+            raise IndexError(f'pattern index {i} out of range 0..{self.n - 1}')
+        j = bisect.bisect_right(self._starts, i) - 1
+        dset = self._dsets[j]
+        try:
+            return dset[()] if dset.ndim == 2 else dset[i - self._starts[j]]
+        except OSError as exc:
+            if hdf5plugin is None and 'plugin' in str(exc):
+                raise OSError(f'{exc}. The frames are compressed; install '
+                              f'hdf5plugin to read them.') from exc
+            raise
+
+    def close(self):
+        self._fh.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def master_optics_type(path):
+    """The optics_type attribute on a raw master file's zone plate group, or
+    None when the file is not a raw master or the attribute is absent."""
+    with h5py.File(path, 'r') as f:
+        if not is_raw_master(f):
+            return None
+        zp = f.get(_RAW_ZONE_PLATE)
+        if zp is None or 'optics_type' not in zp.attrs:
+            return None
+        value = zp.attrs['optics_type']
+        if isinstance(value, bytes):
+            value = value.decode(errors='replace')
+        return str(value)
+
+
+def read_master_positions(f):
+    """(horizontal, vertical, units) from an open raw master file's
+    /entry/sample/positions, an (n_images, 2) array of (X, Z) in `units`
+    (usually 'mm'). Returns None when the file has no such dataset."""
+    if _RAW_POSITIONS not in f or not is_raw_master(f):
+        return None
+    dset = f[_RAW_POSITIONS]
+    pos = np.asarray(dset[()], dtype=np.float64)
+    if pos.ndim != 2 or pos.shape[1] != 2:
+        raise ValueError(f'/{_RAW_POSITIONS} has shape {pos.shape}; '
+                         f'expected (n_images, 2).')
+    units = dset.attrs.get('units', 'mm')
+    if isinstance(units, bytes):
+        units = units.decode(errors='replace')
+    return pos[:, 0], pos[:, 1], str(units).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -280,16 +455,26 @@ def compute_pixel_sizes(res_m_probe, N_probe, crop_N, obj_shape):
 
 
 # ---------------------------------------------------------------------------
-# Save  (dispatches on params['method']: 'CG' or 'LBFGS')
+# Save  (dispatches on params['method']: 'CG', 'LBFGS', 'LSQML' or 'CHAIN')
 # ---------------------------------------------------------------------------
 
 def _build_recon_dir_name(params):
     crop_N    = params['crop_N']
     obj_shape = params['obj_shape']
+    if params['method'] == 'CHAIN':
+        return f'Ndp{crop_N}_Nrpi{obj_shape}_CHAIN_{recipe_tag(params["chain_steps"])}'
     if params['method'] == 'CG':
         n_iter      = params['n_iter']
         clear_every = params['clear_every']
         return f'Ndp{crop_N}_Nrpi{obj_shape}_CG_Niter{n_iter}_clear{clear_every}'
+    if params['method'] == 'LSQML':
+        return (
+            f'Ndp{crop_N}_Nrpi{obj_shape}_LSQML'
+            f'_Nep{params["lsqml_n_epochs"]}'
+            f'_s{params["lsqml_step_scaler"]:g}_m{params["lsqml_momentum"]:g}'
+            + _probe_update_suffix('full' if params.get('lsqml_update_probe') else 'off',
+                                   params.get('lsqml_probe_update_start'))
+        )
     # LBFGS
     reg1 = params['reg_factor1']
     reg2 = [params['reg_factor2_lo'], params['reg_factor2_hi']]
@@ -301,7 +486,19 @@ def _build_recon_dir_name(params):
         f'_{int(round(np.log10(reg2[0])))}'
         f'_{int(round(np.log10(reg2[1])))}'
         f'_lr{int(100*lr1)}_{int(100*lr2)}'
+        + _probe_update_suffix(params.get('lbfgs_probe_update', 'off'),
+                               params.get('lbfgs_probe_update_start'))
     )
+
+
+def _probe_update_suffix(mode, start):
+    """'_pu<k>' when the whole probe is refined from iteration/epoch k,
+    '_pw<k>' when only its mode weights are, '' when it stays fixed."""
+    if mode == 'full':
+        return f'_pu{start}'
+    if mode == 'weights':
+        return f'_pw{start}'
+    return ''
 
 
 def save_rpi_result(entry, probe_interp, params, save_dir):
@@ -313,11 +510,18 @@ def save_rpi_result(entry, probe_interp, params, save_dir):
     entry : dict
         Keys: obj, loss_history, pixel_size_m, frame_idx, timestamp
     probe_interp : ndarray, shape (N_modes, N, N), complex
-        The probe actually used in the reconstruction.
+        The probe actually used in the reconstruction (the refined one when
+        the backend updated it).
     params : dict
-        GUI parameters. Must include 'method' ('CG' or 'LBFGS') and the
-        algorithm-specific keys (CG: n_iter, clear_every; LBFGS: reg_factor1,
-        reg_factor2_lo, reg_factor2_hi, lr1, lr2, n_iter1, n_iter2).
+        GUI parameters. Must include 'method' ('CG', 'LBFGS', 'LSQML' or
+        'CHAIN') and
+        the algorithm-specific keys (CG: n_iter, clear_every; LBFGS:
+        reg_factor1, reg_factor2_lo, reg_factor2_hi, lr1, lr2, n_iter1,
+        n_iter2, lbfgs_probe_update ('off'/'weights'/'full'),
+        lbfgs_probe_update_start; LSQML:
+        lsqml_n_epochs, lsqml_step_scaler, lsqml_momentum, lsqml_update_probe,
+        lsqml_probe_update_start, lsqml_early_stop_pct; CHAIN: chain_steps,
+        chain_json).
     save_dir : str or Path
     """
     save_dir = Path(save_dir)
@@ -336,8 +540,12 @@ def save_rpi_result(entry, probe_interp, params, save_dir):
     (recon_dir / 'object_ph').mkdir(exist_ok=True)
     (recon_dir / 'object_mag').mkdir(exist_ok=True)
 
-    if method == 'CG':
+    if method == 'CHAIN':
+        stem = f'frame{frame_idx}_chain'
+    elif method == 'CG':
         stem = f'frame{frame_idx}_Niter{params["n_iter"]}'
+    elif method == 'LSQML':
+        stem = f'frame{frame_idx}_Nep{params["lsqml_n_epochs"]}'
     else:
         stem = f'frame{frame_idx}_Niter{params["n_iter1"]}_{params["n_iter2"]}'
 
@@ -352,15 +560,30 @@ def save_rpi_result(entry, probe_interp, params, save_dir):
         f.create_dataset('method',           data=method)
         f.create_dataset('Ndp',              data=crop_N)
         f.create_dataset('Nrpi',             data=obj_shape)
-        if method == 'CG':
+        if method == 'CHAIN':
+            # Per-step iteration counts (requested, not what early stop left),
+            # plus the whole chain as the JSON its editor saves.
+            f.create_dataset('Niter', data=[s['n_iter'] for s in params['chain_steps']])
+            f.create_dataset('chain', data=params['chain_json'])
+        elif method == 'CG':
             f.create_dataset('Niter',        data=params['n_iter'])
             f.create_dataset('clear_every',  data=params['clear_every'])
+        elif method == 'LSQML':
+            f.create_dataset('Niter',              data=params['lsqml_n_epochs'])
+            f.create_dataset('step_size_scaler',   data=params['lsqml_step_scaler'])
+            f.create_dataset('momentum',           data=params['lsqml_momentum'])
+            f.create_dataset('update_probe',       data=bool(params['lsqml_update_probe']))
+            f.create_dataset('probe_update_start', data=params['lsqml_probe_update_start'])
+            # Niter is the requested count; len(loss) is what ran after early stop
+            f.create_dataset('early_stop_pct',     data=params.get('lsqml_early_stop_pct', 0.0))
         else:
             reg1 = params['reg_factor1']
             reg2 = [params['reg_factor2_lo'], params['reg_factor2_hi']]
             f.create_dataset('regularization', data=[[reg1, reg1], reg2])
             f.create_dataset('learning_rate',  data=[params['lr1'], params['lr2']])
             f.create_dataset('Niter',          data=[params['n_iter1'], params['n_iter2']])
+            f.create_dataset('probe_update',       data=params.get('lbfgs_probe_update', 'off'))
+            f.create_dataset('probe_update_start', data=params.get('lbfgs_probe_update_start', 0))
         raw = entry.get('raw_image')
         if raw is not None:
             f.create_dataset('raw_image', data=raw)
@@ -562,16 +785,18 @@ def autosave_append(path, entry):
         f.flush()
 
 
-def _save_tiff(path, img, pixel_size_m):
+def _save_tiff(path, img, pixel_size_m, extra_metadata=None):
+    # ImageJ reads the pixel size from the X/YResolution tags (pixels per
+    # unit); 'spacing' in its metadata is the z step, not x/y.
+    px_um = 1e6 * pixel_size_m
+    metadata = {'unit': 'um'}
+    metadata.update(extra_metadata or {})
     tifffile.imwrite(
         path,
         img,
         imagej=True,
-        metadata={
-            'unit': 'um',
-            'xspacing': 1e6 * pixel_size_m,
-            'yspacing': 1e6 * pixel_size_m,
-        },
+        resolution=(1.0 / px_um, 1.0 / px_um) if px_um > 0 else None,
+        metadata=metadata,
     )
 
 
@@ -739,23 +964,33 @@ def save_accumulated_object(path, obj_sum, contrib, positions_um, positions_px,
     """
     Save a stitched object from the Object Accumulator to HDF5.
 
-    The stitched image (object_normalized = obj_sum / contrib) is stored
+    The stitched image (dataset 'object' = obj_sum / contrib) is stored
     alongside the contribution tracker. The raw summed array is deliberately
     not written — it is only an intermediate, and at canvas size it would
     double the file for nothing.
+
+    Both arrays are cropped to the smallest rectangle holding every pixel
+    with contrib > 0; the crop's top-left corner in the full canvas is stored
+    as the 'crop_offset_rc' attribute (subtract it from canvas row/col
+    coordinates such as 'anchor_rc' to get cropped-array indices). The
+    cropped object is also written beside the H5 as a .tif with the pixel
+    size set: uint16, linearly mapped so the covered pixels span 0..65535
+    (the phase range is in the 'object_min' / 'object_max' attributes and
+    the TIFF's ImageJ metadata; uncovered pixels are 0).
 
     Parameters
     ----------
     path : str or Path
     obj_sum : (Ny, Nx) float ndarray
         Summed phase; each contributing frame added once. Used to compute
-        object_normalized, not stored itself.
+        'object', not stored itself.
     contrib : (Ny, Nx) uint ndarray
         Per-pixel contribution count (the pixel_contribution_tracker).
     positions_um : sequence of (x, y)
         Motor positions of every accepted frame, in microns.
     positions_px : sequence of (col, row)
-        The same positions as canvas pixel offsets from the centre.
+        The same positions as canvas pixel offsets from the centre. Float:
+        fractional when the frames were placed with a subpixel shift.
     pixel_size_m : float
         Canvas pixel size (equal to the RPI object pixel size).
     meta : dict or None
@@ -766,20 +1001,43 @@ def save_accumulated_object(path, obj_sum, contrib, positions_um, positions_px,
 
     Returns
     -------
-    str  the path written
+    str  the H5 path written (the TIFF has the same stem)
     """
     path = str(path)
     contrib = np.asarray(contrib)
-    normalized = np.zeros(obj_sum.shape, dtype=np.float32)
-    np.divide(obj_sum, contrib, out=normalized, where=contrib > 0)
+    full_shape = contrib.shape
+    touched = contrib > 0
+    rows = np.flatnonzero(touched.any(axis=1))
+    cols = np.flatnonzero(touched.any(axis=0))
+    if rows.size:
+        r0, r1 = int(rows[0]), int(rows[-1]) + 1
+        c0, c1 = int(cols[0]), int(cols[-1]) + 1
+    else:
+        r0, r1, c0, c1 = 0, full_shape[0], 0, full_shape[1]
+    contrib = contrib[r0:r1, c0:c1]
+    touched = touched[r0:r1, c0:c1]
+    normalized = np.zeros(contrib.shape, dtype=np.float32)
+    np.divide(obj_sum[r0:r1, c0:c1], contrib, out=normalized, where=touched)
+
+    if touched.any():
+        lo = float(normalized[touched].min())
+        hi = float(normalized[touched].max())
+    else:
+        lo = hi = 0.0
+    scale = 65535.0 / (hi - lo) if hi > lo else 0.0
+    img16 = np.zeros(normalized.shape, dtype=np.uint16)
+    img16[touched] = np.clip(
+        np.rint((normalized[touched] - lo) * scale), 0, 65535).astype(np.uint16)
+    _save_tiff(str(Path(path).with_suffix('.tif')), img16, float(pixel_size_m or 0.0),
+               {'object_min': lo, 'object_max': hi})
 
     with h5py.File(path, 'w') as f:
-        f.create_dataset('object_normalized',  data=normalized)
+        f.create_dataset('object',             data=normalized)
         f.create_dataset('pixel_contribution', data=contrib)
         f.create_dataset('positions_um',
                          data=np.asarray(positions_um, dtype=np.float64).reshape(-1, 2))
         f.create_dataset('positions_px',
-                         data=np.asarray(positions_px, dtype=np.int64).reshape(-1, 2))
+                         data=np.asarray(positions_px, dtype=np.float64).reshape(-1, 2))
         f.create_dataset('obj_pixel_size_m', data=float(pixel_size_m))
         for name, arr in (extra or {}).items():
             arr = np.asarray(arr)
@@ -790,4 +1048,8 @@ def save_accumulated_object(path, obj_sum, contrib, positions_um, positions_px,
                 f.attrs[k] = v
             except TypeError:
                 f.attrs[k] = str(v)   # h5py rejects e.g. None / nested dicts
+        f.attrs['crop_offset_rc']  = [r0, c0]
+        f.attrs['uncropped_shape'] = list(full_shape)
+        f.attrs['object_min']      = lo
+        f.attrs['object_max']      = hi
     return path

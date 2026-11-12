@@ -41,13 +41,41 @@
            </property>
            <layout class="QFormLayout" name="paths_form">
             <item row="0" column="0">
+             <widget class="QLabel" name="label_base_path">
+              <property name="text">
+               <string>Base path:</string>
+              </property>
+              <property name="toolTip">
+               <string>Starting folder for the file browsers only; it never changes a path by itself. Probe: &lt;base&gt;/ptychi_recons/. Save dir and accumulator save: &lt;base&gt;/rpi_recons/rpi_live/ (created if missing). H5 replay: &lt;base&gt;/preproc/, else &lt;base&gt;/ptycho/. Missing folders fall back to the nearest existing parent.</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <layout class="QHBoxLayout" name="base_path_hl">
+              <item>
+               <widget class="QLineEdit" name="base_path_edit">
+                <property name="placeholderText">
+                 <string>/path/to/experiment</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="base_path_browse_btn">
+                <property name="text">
+                 <string>...</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item row="1" column="0">
              <widget class="QLabel" name="label_probe">
               <property name="text">
                <string>Probe file:</string>
               </property>
              </widget>
             </item>
-            <item row="0" column="1">
+            <item row="1" column="1">
              <layout class="QHBoxLayout" name="probe_hl">
               <item>
                <widget class="QLineEdit" name="probe_file_edit">
@@ -65,7 +93,7 @@
               </item>
              </layout>
             </item>
-            <item row="1" column="0">
+            <item row="2" column="0">
              <widget class="QLabel" name="label_probe_list">
               <property name="text">
                <string>Probes:</string>
@@ -75,7 +103,7 @@
               </property>
              </widget>
             </item>
-            <item row="1" column="1">
+            <item row="2" column="1">
              <widget class="QListWidget" name="probe_list_widget">
               <property name="maximumSize">
                <size>
@@ -88,14 +116,14 @@
               </property>
              </widget>
             </item>
-            <item row="2" column="0">
+            <item row="3" column="0">
              <widget class="QLabel" name="label_mask">
               <property name="text">
                <string>Pixel mask file:</string>
               </property>
              </widget>
             </item>
-            <item row="2" column="1">
+            <item row="3" column="1">
              <layout class="QHBoxLayout" name="mask_hl">
               <item>
                <widget class="QLineEdit" name="pixel_mask_file_edit">
@@ -113,28 +141,28 @@
               </item>
              </layout>
             </item>
-            <item row="3" column="0">
+            <item row="4" column="0">
              <widget class="QLabel" name="label_pv">
               <property name="text">
                <string>EPICS PV:</string>
               </property>
              </widget>
             </item>
-            <item row="3" column="1">
+            <item row="4" column="1">
              <widget class="QLineEdit" name="pv_name_edit">
               <property name="placeholderText">
                <string>12IDC:dp:array</string>
               </property>
              </widget>
             </item>
-            <item row="4" column="0">
+            <item row="5" column="0">
              <widget class="QLabel" name="label_savedir">
               <property name="text">
                <string>Save dir:</string>
               </property>
              </widget>
             </item>
-            <item row="4" column="1">
+            <item row="5" column="1">
              <layout class="QHBoxLayout" name="savedir_hl">
               <item>
                <widget class="QLineEdit" name="save_dir_edit">
@@ -275,38 +303,6 @@
          </item>
          <item>
           <layout class="QHBoxLayout" name="beamdet_hl">
-           <item>
-            <widget class="QGroupBox" name="detector_group">
-             <property name="title">
-              <string>Detector</string>
-             </property>
-             <layout class="QFormLayout" name="detector_form">
-              <item row="0" column="0">
-               <widget class="QLabel" name="label_cropN">
-                <property name="text">
-                 <string>Crop N:</string>
-                </property>
-               </widget>
-              </item>
-              <item row="0" column="1">
-               <widget class="QSpinBox" name="crop_N_spin">
-                <property name="toolTip">
-                 <string>Detector crop size. Unlike energy / detector distance / beam centre, this is a per-run choice and is not part of the exported JSON config.</string>
-                </property>
-                <property name="minimum">
-                 <number>64</number>
-                </property>
-                <property name="maximum">
-                 <number>2048</number>
-                </property>
-                <property name="value">
-                 <number>512</number>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
            <item>
             <widget class="QLabel" name="geometry_hint_label">
              <property name="text">
@@ -667,7 +663,7 @@ are set in &quot;Setup Initial Probes and Geometry&quot;.</string>
       <widget class="QWidget" name="rightPane">
        <layout class="QVBoxLayout" name="rightVLayout">
         <item>
-         <widget class="ImageView" name="image_view" native="true">
+         <widget class="QWidget" name="image_plot_container">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
             <horstretch>0</horstretch>
@@ -706,13 +702,6 @@ are set in &quot;Setup Initial Probes and Geometry&quot;.</string>
    </layout>
   </widget>
  </widget>
- <customwidgets>
-  <customwidget>
-   <class>ImageView</class>
-   <extends>QWidget</extends>
-   <header>pyqtgraph</header>
-  </customwidget>
- </customwidgets>
  <resources/>
  <connections/>
 </ui>

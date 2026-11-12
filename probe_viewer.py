@@ -14,7 +14,7 @@ startup). It owns two things:
   * the beamline / detector geometry — energy, detector distance and beam
     centre. These used to live on the main panel; they are setup properties
     rather than per-run knobs, so they belong with the probes and travel with
-    them in the exported JSON. Crop N deliberately stays on the main window.
+    them in the exported JSON. Crop N lives in the RPI parameters window.
 
 Probe data is NOT read from disk just because an entry exists in the list or
 is selected — that would mean re-reading every registered probe (or at least
@@ -38,15 +38,17 @@ in one dialog session stay loaded for the next.
 from pathlib import Path
 
 import numpy as np
-import pyqtgraph as pg
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel,
     QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
     QFileDialog, QSizePolicy, QListWidget, QListWidgetItem, QInputDialog,
     QMessageBox,
 )
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
+import pyqtgraph as pg  # after PyQt6, so pyqtgraph binds to it
+
+from pg_image_tools import ImagePlotWidget
 
 from rpi_utils import (
     load_probe_file,
@@ -77,7 +79,7 @@ DEFAULT_GEOMETRY = {
 
 class ProbeViewer(QDialog):
     def __init__(self, choices=None, geometry=None, current_path=None,
-                 probe_cache=None, parent=None):
+                 probe_cache=None, browse_dir=None, parent=None):
         """
         Parameters
         ----------
@@ -96,6 +98,8 @@ class ProbeViewer(QDialog):
             probes are loaded. Pass the same dict across dialog opens to
             avoid re-reading probes already loaded. A fresh dict is used
             (and discarded) if None.
+        browse_dir : str or None
+            Folder the "+" (add probe) file browser opens in.
         """
         super().__init__(parent)
         self.setObjectName('ProbeViewer')
@@ -109,6 +113,7 @@ class ProbeViewer(QDialog):
         self._geometry = dict(DEFAULT_GEOMETRY)
         self._geometry.update(geometry or {})
         self._cache = probe_cache if probe_cache is not None else {}
+        self._browse_dir = browse_dir or ''
         self._sel_name = None
         self._sel_path = None
 
@@ -201,9 +206,10 @@ class ProbeViewer(QDialog):
         layout.addWidget(self.load_status_label)
 
         # Image view (probe amplitude preview) with the illuminated-area outline
-        self.image_view = _named(pg.ImageView(), 'image_view')
-        self.image_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.image_view, 1)
+        self.image_plot = _named(ImagePlotWidget(), 'image_plot')
+        self.image_view = _named(self.image_plot.image_view, 'image_view')
+        self.image_plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.image_plot, 1)
         self._shape_outline = pg.PlotDataItem(pen=pg.mkPen('r', width=2))
         self.image_view.getView().addItem(self._shape_outline)
 
@@ -267,10 +273,10 @@ class ProbeViewer(QDialog):
         for c in self._choices:
             item = QListWidgetItem(self._item_text(c))
             item.setToolTip(c['path'])
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             enabled = c.get('enabled', True)
-            item.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
-            item.setForeground(Qt.black if enabled else Qt.gray)
+            item.setCheckState(Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked)
+            item.setForeground(Qt.GlobalColor.black if enabled else Qt.GlobalColor.gray)
             self.list_widget.addItem(item)
         self.list_widget.blockSignals(False)
 
@@ -357,7 +363,7 @@ class ProbeViewer(QDialog):
 
     def _on_add(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, 'Select Probe HDF5', '',
+            self, 'Select Probe HDF5', self._browse_dir,
             'HDF5 files (*.h5 *.hdf5);;All files (*)'
         )
         if not path:
@@ -375,8 +381,8 @@ class ProbeViewer(QDialog):
             self.load_status_label.setText(f'Error loading: {err}')
         item = QListWidgetItem(self._item_text(entry))
         item.setToolTip(path)
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        item.setCheckState(Qt.Checked)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Checked)
         self.list_widget.addItem(item)
         self.list_widget.setCurrentRow(self.list_widget.count() - 1)
 
@@ -412,7 +418,7 @@ class ProbeViewer(QDialog):
             self, 'Replace configuration',
             f'Replace the current {len(self._choices)} probe(s) and the '
             f'geometry below with {len(probes)} probe(s) from file?',
-        ) != QMessageBox.Yes:
+        ) != QMessageBox.StandardButton.Yes:
             return
         self._choices = probes
         self._geometry.update(beamline)
@@ -467,7 +473,7 @@ class ProbeViewer(QDialog):
         entry = self._choices[row]
         dlg = _ProbeShapeDialog(entry['shape'], entry['fill_fraction'],
                                 entry['name'], self)
-        if dlg.exec_() != QDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         entry['shape'], entry['fill_fraction'] = dlg.get_result()
         self.list_widget.item(row).setText(self._item_text(entry))
@@ -478,9 +484,9 @@ class ProbeViewer(QDialog):
         row = self.list_widget.row(item)
         if not (0 <= row < len(self._choices)):
             return
-        enabled = item.checkState() == Qt.Checked
+        enabled = item.checkState() == Qt.CheckState.Checked
         self._choices[row]['enabled'] = enabled
-        item.setForeground(Qt.black if enabled else Qt.gray)
+        item.setForeground(Qt.GlobalColor.black if enabled else Qt.GlobalColor.gray)
         if row == self.list_widget.currentRow():
             self._on_row_changed(row)   # refresh preview / accept state
 
@@ -497,7 +503,7 @@ class ProbeViewer(QDialog):
             self.accept_btn.setEnabled(False)
             self.path_label.setText(f'{name}\n{path}\n(disabled — cannot be used)')
             self.shape_label.setText('')
-            self.image_view.clear()
+            self.image_plot.clear_image()
             self._shape_outline.clear()
             return
         data = self._cache.get(path)
@@ -509,12 +515,12 @@ class ProbeViewer(QDialog):
                 f'{name}\n{path}\n(not loaded — click "Load registered probes")'
             )
             self.shape_label.setText('')
-            self.image_view.clear()
+            self.image_plot.clear_image()
             self._shape_outline.clear()
             return
         self._sel_name = name
         self._sel_path = path
-        self._display_probe(data['probe'], f'{name}\n{path}', entry)
+        self._display_probe(data['probe'], f'{name}\n{path}', entry, data.get('res_m'))
         self.accept_btn.setEnabled(True)
 
     def _clear_selection(self):
@@ -523,7 +529,7 @@ class ProbeViewer(QDialog):
         self.accept_btn.setEnabled(False)
         self.path_label.setText('No probe selected.')
         self.shape_label.setText('')
-        self.image_view.clear()
+        self.image_plot.clear_image()
         self._shape_outline.clear()
 
     def _on_accept(self):
@@ -536,7 +542,7 @@ class ProbeViewer(QDialog):
     # Display helpers
     # ------------------------------------------------------------------
 
-    def _display_probe(self, probe, label, entry):
+    def _display_probe(self, probe, label, entry, res_m=None):
         """Show amplitude of probe[0, 0] (first OPR, first mode), with the
         illuminated-area outline drawn on top so the filling fraction can be
         eyeballed against the real beam."""
@@ -546,7 +552,8 @@ class ProbeViewer(QDialog):
             f'illumination: {entry["shape"]} @ {entry["fill_fraction"]:.2f}'
         )
         amp = np.abs(probe[0, 0]).astype(np.float32)
-        self.image_view.setImage(amp, autoLevels=True, autoRange=True)
+        # pg_image_tools is col-major (image[x, y]); amp is [row, col].
+        self.image_plot.set_image(amp.T, pixel_size_m=res_m or 1.0, autoRange=True)
         self._draw_shape_outline(amp.shape[-1], entry['shape'],
                                  entry['fill_fraction'])
 
@@ -587,7 +594,7 @@ class ProbeViewer(QDialog):
         else (None, None, None, None). `probe`/`res_m` come straight from the
         cache, so the caller never needs to re-read the file.
         """
-        if self.result() == QDialog.Accepted and self._sel_path is not None:
+        if self.result() == QDialog.DialogCode.Accepted and self._sel_path is not None:
             data = self._cache.get(self._sel_path)
             if data is not None:
                 return self._sel_name, self._sel_path, data['probe'], data['res_m']

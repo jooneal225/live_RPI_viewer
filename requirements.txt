@@ -1,4 +1,4 @@
-PyQt5>=5.15
+PyQt6
 pyqtgraph>=0.13
 numpy
 scipy
@@ -7,4 +7,6 @@ h5py
 tifffile
 pyepics
 torch
-cdtools
+cdtools-py
+ptychi>=2.4.0
+pvapy

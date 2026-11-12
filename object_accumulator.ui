@@ -476,7 +476,7 @@
          <number>0</number>
         </property>
         <item>
-         <widget class="ImageView" name="accum_image_view" native="true">
+         <widget class="QWidget" name="accum_plot_container">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
             <horstretch>1</horstretch>
@@ -584,13 +584,6 @@
    </item>
   </layout>
  </widget>
- <customwidgets>
-  <customwidget>
-   <class>ImageView</class>
-   <extends>QWidget</extends>
-   <header>pyqtgraph</header>
-  </customwidget>
- </customwidgets>
  <resources/>
  <connections/>
 </ui>

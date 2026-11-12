@@ -1,0 +1,14 @@
+[project]
+name = "live-rpi-viewer"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "cdtools-py>=0.3.2",
+    "hdf5plugin>=7.1.0",
+    "ptychi>=2.4.0",
+    "pvapy>=5.6.0",
+    "pyepics",
+    "pyqt6",
+    "pyqtgraph>=0.14.0",
+    "pyzmq>=27.3.0",
+]

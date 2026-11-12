@@ -27,8 +27,9 @@ How it fits together
 Debugging aids, since this is expected to need shaking out on the beamline:
   * Four position sources: EPICS motor PVs, the quDIS interferometer over the
     qds_bridge (matched to each frame by detector timestamp), and two that
-    touch no PVs at all — an H5 replay reading "ppX"/"ppY" alongside an H5
-    pattern replay, and a fully synthetic raster. The entire pipeline can be
+    touch no PVs at all — an H5 replay reading "ppX"/"ppY" (or a ptychi
+    result's fractional "positions_px", placed with a subpixel shift)
+    alongside an H5 pattern replay, and a fully synthetic raster. The entire pipeline can be
     exercised offline.
   * "Test position read" reports exactly what the configured source returns.
   * Per-frame failures are logged with a traceback and counted; the run
@@ -44,20 +45,24 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-import pyqtgraph as pg
 
-from PyQt5 import uic
-from PyQt5.QtCore import (Qt, QEvent, QMutex, QThread, QTimer, QWaitCondition,
+from PyQt6 import uic
+from PyQt6.QtCore import (Qt, QEvent, QMutex, QThread, QTimer, QWaitCondition,
                           pyqtSignal)
-from PyQt5.QtWidgets import (
-    QActionGroup, QApplication, QComboBox, QDialog, QDialogButtonBox,
+from PyQt6.QtGui import QActionGroup
+from PyQt6.QtWidgets import (
+    QApplication, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLayout,
     QLineEdit, QMenuBar, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout,
     QWidget,
 )
+import pyqtgraph as pg  # after PyQt6, so pyqtgraph binds to it
+
+from pg_image_tools import ImagePlotWidget
 
 from rpi_utils import (
     compute_pixel_sizes,
+    read_master_positions,
     scan_tag_from_path,
     illumination_mask,
     process_phase_region,
@@ -74,9 +79,10 @@ _UI_FILE = Path(__file__).parent / 'object_accumulator.ui'
 # Position-source combo entries → internal keys (index-aligned).
 _SOURCE_LABELS = ['EPICS motor PVs',
                   'QDS interferometer (ch1 = H, ch2 = V)',
-                  'H5 file (ppX / ppY)',
-                  'Simulated — no PV reads']
-_SOURCES       = ['epics', 'qds', 'h5', 'simulated']
+                  'H5 file (ppX / ppY, or ptychi positions_px)',
+                  'Simulated — no PV reads',
+                  'Simulated — all frames at (0, 0)']
+_SOURCES       = ['epics', 'qds', 'h5', 'simulated', 'zero']
 
 # The interferometer reports nanometres; positions are handled in microns.
 _NM_TO_UM = 1.0e-3
@@ -180,6 +186,10 @@ _PV_CONNECT_TIMEOUT_S = 3.0
 # replayed when the window opens.
 _POS_H5_GLOB = '*_para.hdf5'
 
+# Positions taken from a ptychi reconstruction are fractional pixels. They are
+# rounded to this many decimals and the remainder applied as a Fourier shift.
+_SUBPIXEL_DECIMALS = 2
+
 # Accumulated-position overlay on the object image.
 _POS_MARKER_SIZE  = 3
 _POS_MARKER_COLOR = 'r'
@@ -188,6 +198,17 @@ _POS_MARKER_COLOR = 'r'
 # ══════════════════════════════════════════════════════════════════════════
 # Position sources
 # ══════════════════════════════════════════════════════════════════════════
+
+def _subpixel_shift(arr, dy, dx):
+    """arr moved by (dy, dx) pixels (positive = toward higher indices), by
+    the Fourier shift theorem. Wraps at the edges, which the illumination
+    mask keeps out of the stamp."""
+    ny, nx = arr.shape
+    ky = np.fft.fftfreq(ny)[:, None]
+    kx = np.fft.fftfreq(nx)[None, :]
+    ramp = np.exp(-2j * np.pi * (ky * dy + kx * dx))
+    return np.fft.ifft2(np.fft.fft2(arr) * ramp).astype(arr.dtype, copy=False)
+
 
 class PositionSourceError(RuntimeError):
     """Raised with a message intended to be shown to the user verbatim."""
@@ -229,6 +250,15 @@ class _PositionSource:
         self._ppy      = None
         self._counter  = 0
         self._last_h5_index = None
+        # 'ppx' (ppX / ppY in the units combo's units), 'ptychi'
+        # (positions_px × obj_pixel_size_m) or 'master' (a raw master file's
+        # /entry/sample/positions in its own units), decided at open.
+        self.h5_format = ''
+        self._ptychi_pixel_m = None
+        self._master_units   = ''
+        # Fractional pixel positions should be placed with a subpixel shift
+        # rather than rounded. True for ptychi positions.
+        self.subpixel  = False
 
         self.qds_host     = qds_host
         self.qds_port     = int(qds_port)
@@ -250,7 +280,7 @@ class _PositionSource:
             self._open_qds()
         elif self.kind == 'h5':
             self._open_h5()
-        # 'simulated' needs nothing
+        # 'simulated' and 'zero' need nothing
 
     def _open_epics(self):
         if not self.h_pv or not self.v_pv:
@@ -307,19 +337,29 @@ class _PositionSource:
     def _open_h5(self):
         if not self.h5_path:
             raise PositionSourceError(
-                'Select an H5 file containing the "ppX" and "ppY" datasets.')
+                'Select an H5 file containing "ppX" and "ppY", '
+                '"positions_px" and "obj_pixel_size_m" (a ptychi result), or '
+                'a raw master file with /entry/sample/positions.')
         if not Path(self.h5_path).is_file():
             raise PositionSourceError(f'"{self.h5_path}" is not a file.')
         import h5py
         try:
             with h5py.File(self.h5_path, 'r') as f:
-                missing = [k for k in ('ppX', 'ppY') if k not in f]
-                if missing:
-                    raise PositionSourceError(
-                        f'{self.h5_path} has no {" and no ".join(missing)} '
-                        f'dataset. Available keys: {list(f.keys())}')
-                ppx = np.asarray(f['ppX'][()], dtype=np.float64).ravel()
-                ppy = np.asarray(f['ppY'][()], dtype=np.float64).ravel()
+                if 'ppX' in f and 'ppY' in f:
+                    ppx = np.asarray(f['ppX'][()], dtype=np.float64).ravel()
+                    ppy = np.asarray(f['ppY'][()], dtype=np.float64).ravel()
+                    self.h5_format = 'ppx'
+                elif 'positions_px' in f and 'obj_pixel_size_m' in f:
+                    ppx, ppy = self._read_ptychi_positions(f)
+                else:
+                    master = read_master_positions(f)
+                    if master is None:
+                        raise PositionSourceError(
+                            f'{self.h5_path} has neither "ppX" + "ppY", '
+                            f'"positions_px" + "obj_pixel_size_m", nor a raw '
+                            f'master file\'s /entry/sample/positions. '
+                            f'Available keys: {list(f.keys())}')
+                    ppx, ppy = self._use_master_positions(*master)
         except PositionSourceError:
             raise
         except Exception as exc:
@@ -331,6 +371,37 @@ class _PositionSource:
                 f'{self.h5_path}: ppX has {ppx.size} entries but ppY has '
                 f'{ppy.size}. They must match.')
         self._ppx, self._ppy = ppx, ppy
+
+    def _read_ptychi_positions(self, f):
+        """(x_um, y_um) from a ptychi reconstruction's positions_px, an
+        (N, 2) array of (row, col) = (y, x) in object pixels. Converted to
+        microns here, so the units combo does not apply; invert / swap do."""
+        pos = np.asarray(f['positions_px'][()], dtype=np.float64)
+        pix_m = float(np.asarray(f['obj_pixel_size_m'][()]).ravel()[0])
+        if pos.ndim != 2 or pos.shape[1] != 2:
+            raise PositionSourceError(
+                f'{self.h5_path}: positions_px has shape {pos.shape}; '
+                f'expected (N, 2).')
+        if not pix_m > 0:
+            raise PositionSourceError(
+                f'{self.h5_path}: obj_pixel_size_m is {pix_m}.')
+        self.h5_format       = 'ptychi'
+        self._ptychi_pixel_m = pix_m
+        self.scale           = 1.0
+        self.subpixel        = True
+        return pos[:, 1] * pix_m * 1e6, pos[:, 0] * pix_m * 1e6
+
+    def _use_master_positions(self, h, v, units):
+        """Positions from a raw master file. Its 'units' attribute sets the
+        scale, so the units combo does not apply; invert / swap do."""
+        if units not in _UNIT_TO_UM:
+            raise PositionSourceError(
+                f'{self.h5_path}: /entry/sample/positions has units '
+                f'"{units}"; expected one of {", ".join(_UNITS)}.')
+        self.h5_format     = 'master'
+        self._master_units = units
+        self.scale         = _UNIT_TO_UM[units]
+        return h, v
 
     def close(self):
         self._pvs = None
@@ -352,6 +423,9 @@ class _PositionSource:
             h, v = self._read_qds(frame_ts)
         elif self.kind == 'h5':
             h, v = self._read_h5(index)
+        elif self.kind == 'zero':
+            # Every frame on the same spot; no transform, so it stays (0, 0).
+            return 0.0, 0.0
         else:
             h, v = self._read_simulated(index)
         h, v = self._transform(h, v)
@@ -482,7 +556,13 @@ class _PositionSource:
             return f'QDS {self.qds_host}:{self.qds_port} ch1/ch2'
         if self.kind == 'h5':
             n = 0 if self._ppx is None else self._ppx.size
+            if self.h5_format == 'ptychi':
+                return f'H5 ptychi positions_px n={n}'
+            if self.h5_format == 'master':
+                return f'H5 master /entry/sample/positions n={n}'
             return f'H5 ppX/ppY n={n}'
+        if self.kind == 'zero':
+            return 'simulated, all frames at (0, 0)'
         return f'simulated raster, step {self._sim_step:.3f} um'
 
     def detail(self):
@@ -490,6 +570,20 @@ class _PositionSource:
         if self.kind == 'h5':
             if self._ppx is None:
                 return ['not open']
+            if self.h5_format == 'ptychi':
+                return [f'file {Path(self.h5_path).name}',
+                        f'ptychi positions_px n={self._ppx.size}, '
+                        f'{self._ptychi_pixel_m * 1e9:.3f} nm/px',
+                        f'x  [{self._ppx.min():+.4g}, {self._ppx.max():+.4g}] um',
+                        f'y  [{self._ppy.min():+.4g}, {self._ppy.max():+.4g}] um',
+                        f'(units combo ignored; subpixel placement on)']
+            if self.h5_format == 'master':
+                return [f'file {Path(self.h5_path).name}',
+                        f'/entry/sample/positions n={self._ppx.size}, '
+                        f'units {self._master_units}',
+                        f'X  [{self._ppx.min():.4g}, {self._ppx.max():.4g}]',
+                        f'Z  [{self._ppy.min():.4g}, {self._ppy.max():.4g}]',
+                        '(ranges in file units; units combo ignored)']
             return [f'file {Path(self.h5_path).name}',
                     f'ppX  {self._ppx.shape} {self._ppx.dtype}'
                     f'  [{self._ppx.min():.4g}, {self._ppx.max():.4g}]',
@@ -510,6 +604,8 @@ class _PositionSource:
             if self._qds_last_dt is not None:
                 lines.append(f'last match dt {self._qds_last_dt * 1e3:+.1f} ms')
             return lines
+        if self.kind == 'zero':
+            return ['every frame at (0, 0) um, no PVs read']
         return [f'step {self._sim_step:.3f} um, no PVs read']
 
 
@@ -642,8 +738,15 @@ class ObjectAccumulatorWindow(QDialog):
         super().__init__(main_window)
         uic.loadUi(str(_UI_FILE), self)
         self.setObjectName('ObjectAccumulatorWindow')
+
+        # pg_image_tools viewer (lineout, measure, filters, compare, ... in the
+        # right-click menu). self.accum_image_view stays the bare pg.ImageView.
+        self.accum_plot = ImagePlotWidget(self.accum_plot_container, keep_points=True)
+        self.accum_image_view = self.accum_plot.image_view
+        self.accum_image_view.setObjectName('accum_image_view')
+        self.accum_plot.action_no_zoom_tracking.setChecked(True)
         # A real top-level window: non-modal, with its own minimise/maximise.
-        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)
         self.setModal(False)
 
         self._main = main_window
@@ -739,8 +842,14 @@ class ObjectAccumulatorWindow(QDialog):
         self._on_mode_changed()
         self._update_canvas_info()
 
+        # The menu's "Auto colorscale" and the auto-levels checkbox are one
+        # setting. setChecked() doesn't emit triggered, so this can't loop.
+        auto = self.accum_plot.action_auto_colorscale
+        auto.setChecked(self.accum_autolevel_check.isChecked())
+        auto.triggered.connect(self.accum_autolevel_check.setChecked)
+        self.accum_autolevel_check.toggled.connect(auto.setChecked)
+
         vb = self.accum_image_view.getView()
-        vb.menu.addAction('Reset Zoom', vb.autoRange)
         self._accum_vb = vb
         self._first_render = True
         self._cursor_proxy = pg.SignalProxy(
@@ -769,14 +878,14 @@ class ObjectAccumulatorWindow(QDialog):
         and pinned to a reserved line count vertically. The image gets
         everything that is left.
         """
-        self.layout().setSizeConstraint(QLayout.SetNoConstraint)
+        self.layout().setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         for name in _RESERVED_LINES:
             lb = getattr(self, name, None)
             if lb is None:        # label dropped from the .ui
                 continue
-            lb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            lb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             lb.setWordWrap(False)
-            lb.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            lb.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._apply_label_heights()
         # The controls column keeps its width; everything else goes to the image.
         self.accum_splitter.setStretchFactor(0, 0)
@@ -812,7 +921,7 @@ class ObjectAccumulatorWindow(QDialog):
         # The font size is driven from the main window, and the reserved
         # heights are in pixels — recompute them whenever it changes.
         super().changeEvent(event)
-        if event.type() == QEvent.FontChange:
+        if event.type() == QEvent.Type.FontChange:
             QTimer.singleShot(0, self._apply_label_heights)
 
     def _build_menu(self):
@@ -955,7 +1064,7 @@ class ObjectAccumulatorWindow(QDialog):
         # Simulated positions are generated in microns already, and the
         # interferometer always reports nm.
         for w in (self.label_motor_units, self.motor_units_combo):
-            w.setEnabled(kind not in ('simulated', 'qds'))
+            w.setEnabled(kind not in ('simulated', 'zero', 'qds'))
 
     def _on_mode_changed(self):
         decaying = self._current_mode() == 'decay'
@@ -1105,8 +1214,8 @@ class ObjectAccumulatorWindow(QDialog):
 
     def _on_browse_pos_h5(self):
         dlg = QFileDialog(self)
-        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
-        dlg.setFileMode(QFileDialog.ExistingFile)
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
         dlg.setNameFilter('HDF5 (*.h5 *.hdf5)')
         # The scan being replayed is the best guess at where its positions
         # are; fall back to wherever the current position file lives.
@@ -1117,7 +1226,7 @@ class ObjectAccumulatorWindow(QDialog):
                 start_dir = current.parent
         if start_dir is not None:
             dlg.setDirectory(str(start_dir))
-        if dlg.exec_():
+        if dlg.exec():
             self.pos_h5_file_edit.setText(dlg.selectedFiles()[0])
 
     def _main_h5_dir(self):
@@ -1135,10 +1244,19 @@ class ObjectAccumulatorWindow(QDialog):
         return d if d.is_dir() else None
 
     def _find_pos_h5(self):
-        """First *_para.hdf5 beside the H5 being replayed, or None."""
+        """The replayed H5 itself when it is a raw master file with
+        positions, else the first *_para.hdf5 beside it, or None."""
         d = self._main_h5_dir()
         if d is None:
             return None
+        main_h5 = str(Path(self._main.h5_file_edit.text().strip()).expanduser())
+        try:
+            import h5py
+            with h5py.File(main_h5, 'r') as f:
+                if read_master_positions(f) is not None:
+                    return main_h5
+        except Exception:
+            pass
         matches = sorted(d.glob(_POS_H5_GLOB))
         return str(matches[0]) if matches else None
 
@@ -1188,8 +1306,9 @@ class ObjectAccumulatorWindow(QDialog):
             else _SOURCES.index(default_source))
         self.h_motor_pv_edit.setText(_get('h_motor_pv', '12ideMCS1:m1.RBV'))
         self.v_motor_pv_edit.setText(_get('v_motor_pv', '12ideMCS1:m2.RBV'))
-        # A position file sitting beside the scan being replayed beats any
-        # remembered one, which is usually from an earlier scan.
+        # The replayed master file's own positions, or a position file
+        # sitting beside the scan, beat any remembered one, which is usually
+        # from an earlier scan.
         self._pos_autofound = self._find_pos_h5()
         self.pos_h5_file_edit.setText(self._pos_autofound
                                       or _get('pos_h5_file', ''))
@@ -1365,7 +1484,7 @@ class ObjectAccumulatorWindow(QDialog):
             px = self._last_pos_px or (0, 0)
             idx = self._last_pos_idx
             lines.append(f'pos   {x:+.3f}, {y:+.3f} um  '
-                         f'({px[0]:+d}, {px[1]:+d}) px'
+                         f'({px[0]:+.2f}, {px[1]:+.2f}) px'
                          + (f'  H5 #{idx}' if idx is not None else ''))
         else:
             lines.append('pos   —')
@@ -1519,6 +1638,11 @@ class ObjectAccumulatorWindow(QDialog):
             self._fail_start('Could not read the main window settings — '
                              'see the diagnostic log.')
             return
+
+        # An H5 replay stops after one lap of the file (wrapping round when it
+        # starts midway) rather than stamping the same patterns again. PV
+        # runs are open-ended and ignore this.
+        params['h5_single_pass'] = True
 
         self._probe_shape   = params.get('probe_shape', DEFAULT_PROBE_SHAPE)
         self._fill_fraction = float(params.get('fill_fraction', DEFAULT_FILL_FRACTION))
@@ -1678,6 +1802,8 @@ class ObjectAccumulatorWindow(QDialog):
         self._log('Stopped.')
 
     def _on_worker_finished(self):
+        if getattr(self._worker, 'finished_h5_pass', False):
+            self._log('Read every pattern in the H5 file; stopped.')
         self._set_running_ui(False)
         if self._tracker_win is not None:
             self._tracker_win.close()
@@ -1771,11 +1897,20 @@ class ObjectAccumulatorWindow(QDialog):
             self._log(f'Anchor ({pos[0]:+.3f}, {pos[1]:+.3f}) um '
                       f'-> px {self._anchor_rc}.')
 
-        dx_px = int(round((self._last_pos_um[0] - self._origin_um[0])
-                          * 1e-6 / self._res_rpi_m))
-        dy_px = int(round((self._last_pos_um[1] - self._origin_um[1])
-                          * 1e-6 / self._res_rpi_m))
-        self._last_pos_px = (dx_px, dy_px)
+        fx = (self._last_pos_um[0] - self._origin_um[0]) * 1e-6 / self._res_rpi_m
+        fy = (self._last_pos_um[1] - self._origin_um[1]) * 1e-6 / self._res_rpi_m
+        dx_px, dy_px = int(round(fx)), int(round(fy))
+        # Fractional positions (ptychi): place on the nearest whole pixel and
+        # shift the frame by the remainder, to _SUBPIXEL_DECIMALS places.
+        sub_dy = sub_dx = 0.0
+        if self._source is not None and self._source.subpixel:
+            fx, fy = round(fx, _SUBPIXEL_DECIMALS), round(fy, _SUBPIXEL_DECIMALS)
+            dx_px, dy_px = int(round(fx)), int(round(fy))
+            sub_dx = round(fx - dx_px, _SUBPIXEL_DECIMALS)
+            sub_dy = round(fy - dy_px, _SUBPIXEL_DECIMALS)
+        else:
+            fx, fy = float(dx_px), float(dy_px)
+        self._last_pos_px = (fx, fy)
 
         obj = entry['obj']
         n   = obj.shape[-1]
@@ -1791,14 +1926,17 @@ class ObjectAccumulatorWindow(QDialog):
             self._stamp_mask = illumination_mask(
                 n, self._probe_shape, self._fill_fraction, _ACCUM_STAMP_FUDGE)
             self._log(f'Frame size now {n} px, mask rebuilt.')
+        if sub_dy or sub_dx:
+            obj = _subpixel_shift(obj, sub_dy, sub_dx)
 
         ny, nx = self._obj_sum.shape
         ar, ac = self._anchor_rc
         r0 = ar + dy_px - n // 2
         c0 = ac + dx_px - n // 2
         # Where the motors alone would have put it, kept so the saved record
-        # shows the nominal position and the correction separately.
-        nom_dx_px, nom_dy_px = dx_px, dy_px
+        # shows the nominal position and the correction separately. Includes
+        # the subpixel part, which the shift above has already applied.
+        nom_dx_px, nom_dy_px = fx, fy
 
         # If this frame would write nothing — fill-empty mode landing on
         # canvas that is already covered — there is no point unwrapping it or
@@ -1835,7 +1973,9 @@ class ObjectAccumulatorWindow(QDialog):
                 c0 += shift[1]
                 dy_px += shift[0]
                 dx_px += shift[1]
-                self._last_pos_px = (dx_px, dy_px)
+                fy += shift[0]
+                fx += shift[1]
+                self._last_pos_px = (fx, fy)
 
         sr0, sr1 = max(0, r0), min(ny, r0 + n)
         sc0, sc1 = max(0, c0), min(nx, c0 + n)
@@ -1873,8 +2013,8 @@ class ObjectAccumulatorWindow(QDialog):
             loss,
             self._last_pos_um[0], self._last_pos_um[1],
             float(nom_dx_px), float(nom_dy_px),
-            float(dx_px), float(dy_px),
-            float(dx_px - nom_dx_px), float(dy_px - nom_dy_px),
+            float(fx), float(fy),
+            float(fx - nom_dx_px), float(fy - nom_dy_px),
             norm_offset,
         ))
         self._n_accepted += 1
@@ -2164,15 +2304,14 @@ class ObjectAccumulatorWindow(QDialog):
         img = payload.get('image')
         if img is None or img.size == 0:
             return
-        if self.accum_autolevel_check.isChecked():
-            self.accum_image_view.setImage(
-                img, autoLevels=False, autoRange=self._first_render,
-                levels=payload['levels'])
-        else:
-            self.accum_image_view.setImage(
-                img, autoLevels=False, autoRange=self._first_render)
-        self._first_render = False
         self._displayed_ds = payload.get('downsample', 1)
+        # pg_image_tools is col-major (image[x, y]); the canvas is [row, col].
+        self.accum_plot.set_image(
+            img.T, pixel_size_m=(self._res_rpi_m or 1.0) * self._displayed_ds,
+            autoRange=True if self._first_render else None)
+        if self.accum_autolevel_check.isChecked():
+            self.accum_image_view.setLevels(*payload['levels'])
+        self._first_render = False
         self._update_pos_scatter()
 
         self._coverage = (f'cover {payload["coverage"]:.1f}%'
@@ -2260,9 +2399,12 @@ class ObjectAccumulatorWindow(QDialog):
             QMessageBox.information(self, 'Nothing to save',
                                     'Start a run first.')
             return
+        # Same folder the main panel's Save dir browser opens in.
         start_dir = ''
         try:
-            start_dir = self._main.save_dir_edit.text().strip()
+            start_dir = self._main.browse_dir('save')
+            if start_dir is None:
+                start_dir = self._main.save_dir_edit.text().strip()
         except Exception:
             pass
         # Name the file after the scan being replayed when there is one —
@@ -2309,6 +2451,11 @@ class ObjectAccumulatorWindow(QDialog):
             'h_motor_pv':     self.h_motor_pv_edit.text(),
             'v_motor_pv':     self.v_motor_pv_edit.text(),
             'position_units': self._current_units(),
+            'position_h5_format': (self._source.h5_format
+                                   if self._source is not None else ''),
+            'subpixel_shift': bool(self._source is not None
+                                   and self._source.subpixel),
+            'subpixel_decimals': _SUBPIXEL_DECIMALS,
             'invert_h':       self._act_invert_h.isChecked(),
             'invert_v':       self._act_invert_v.isChecked(),
             'swap_axes':      self._act_swap.isChecked(),
@@ -2327,6 +2474,7 @@ class ObjectAccumulatorWindow(QDialog):
                                  if self._current_source_kind() == 'h5' else ''),
             'h5_start_idx':   p.get('h5_start_idx', 0),
             'h5_stride':      p.get('h5_stride', 1),
+            'n_avg':          p.get('n_avg', 1),
             'image_source':   'h5' if p.get('h5_mode') else 'pv',
             'image_pv':       '' if p.get('h5_mode') else p.get('pv_name', ''),
             # --- which probe produced these reconstructions (not the probe) --
@@ -2448,27 +2596,29 @@ class _TrackerWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('TrackerWindow')
-        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)
         self.setWindowTitle('Pixel contribution (live)')
         self.resize(760, 800)
 
         layout = QVBoxLayout(self)
-        self._iv = pg.ImageView()
+        self._plot = ImagePlotWidget(keep_points=True)
+        self._plot.action_no_zoom_tracking.setChecked(True)
+        self._plot.action_auto_colorscale.setChecked(False)   # levels come with each frame
+        self._iv = self._plot.image_view
         self._iv.setObjectName('tracker_image_view')
-        layout.addWidget(self._iv)
+        layout.addWidget(self._plot)
         self._info = QLabel('')
         self._info.setObjectName('tracker_info_label')
         self._info.setStyleSheet('font-family: monospace;')
         layout.addWidget(self._info)
-        vb = self._iv.getView()
-        vb.menu.addAction('Reset Zoom', vb.autoRange)
         self._first = True
 
     def update_image(self, tracker, levels=None):
         if tracker is None or tracker.size == 0:
             return
-        self._iv.setImage(tracker, autoLevels=False, autoRange=self._first,
-                          levels=levels or (0.0, 1.0))
+        self._plot.set_image(tracker.T, autoRange=True if self._first else None)
+        if not self._plot.action_auto_colorscale.isChecked():
+            self._iv.setLevels(*(levels or (0.0, 1.0)))
         self._first = False
         hi = levels[1] if levels else float(tracker.max())
         self._info.setText(
@@ -2520,7 +2670,8 @@ class _StagePositionsDialog(QDialog):
             'qds_bridge, the position nearest the detector frame\'s '
             'timestamp (settings under Options ▸ QDS interferometer). '
             '"Simulated" reads no PVs at all and walks a deterministic raster '
-            '— use it to exercise the whole pipeline offline.')
+            '— use it to exercise the whole pipeline offline. "All frames at '
+            '(0, 0)" stacks every frame on one spot.')
         form.addRow(_named(QLabel('Horizontal PV:'), 'label_h_pv'),
                     _named(QLineEdit('12ideMCS1:m1.RBV'), 'h_motor_pv_edit'))
         self.h_motor_pv_edit.setToolTip('Read-back PV for the horizontal stage.')
@@ -2532,12 +2683,19 @@ class _StagePositionsDialog(QDialog):
 
         h5_row = QHBoxLayout()
         h5_row.addWidget(_named(QLineEdit(), 'pos_h5_file_edit'))
-        self.pos_h5_file_edit.setPlaceholderText('H5 with ppX / ppY datasets…')
+        self.pos_h5_file_edit.setPlaceholderText(
+            'H5 with ppX / ppY, or a ptychi recon (positions_px)…')
         self.pos_h5_file_edit.setToolTip(
             'H5 file holding the positions for an H5 pattern replay, in '
             'datasets "ppX" (horizontal) and "ppY" (vertical). Indexed by the '
             'same pattern index as the diffraction file. On opening, a '
-            f'{_POS_H5_GLOB} beside the replayed H5 is picked automatically.')
+            f'{_POS_H5_GLOB} beside the replayed H5 is picked automatically\n'
+            '(or, for a raw master file, the file itself: '
+            '/entry/sample/positions, (X, Z) in its "units" attribute).\n'
+            'A ptychi reconstruction also works: "positions_px" (N x 2, '
+            'row/col, fractional) times "obj_pixel_size_m". Its positions '
+            'ignore the units setting and are placed with a '
+            f'{_SUBPIXEL_DECIMALS}-decimal subpixel shift.')
         h5_row.addWidget(_named(QPushButton('...'), 'pos_h5_browse_btn'))
         self.pos_h5_browse_btn.setMaximumWidth(34)
         form.addRow(_named(QLabel('Position H5:'), 'label_pos_h5'), h5_row)
@@ -2545,7 +2703,8 @@ class _StagePositionsDialog(QDialog):
         form.addRow(_named(QLabel('Position units:'), 'label_motor_units'),
                     _named(QComboBox(), 'motor_units_combo'))
         self.motor_units_combo.setToolTip(
-            'Units the PVs / ppX / ppY report in. Everything downstream works '
+            'Units the PVs / ppX / ppY report in (ignored for a ptychi '
+            'positions file). Everything downstream works '
             'in microns. Axis inversion and H/V swap live in the Options menu.')
 
         body_vl = QVBoxLayout(self._body)
@@ -2557,7 +2716,7 @@ class _StagePositionsDialog(QDialog):
             'Read the configured position source once, right now, and report '
             'what came back. For an H5 source, also plot every position.')
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.setObjectName('pos_dlg_buttons')
         buttons.rejected.connect(self.close)
 
@@ -2577,7 +2736,7 @@ class _PositionScatterWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('PositionScatterWindow')
-        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)
         self.resize(640, 640)
 
         layout = QVBoxLayout(self)

@@ -1,9 +1,14 @@
 """
 RPI Live Viewer — main entry point.
 
-A single GUI that can run either RPI backend:
+A single GUI that can run any of three RPI backends, or a chain of them:
   * "Fast conjugate gradient RPI"  (CGWorker)
-  * "Slow LBFGS RPI"               (LBFGSWorker)
+  * "Moderate LSQML RPI"           (LSQMLWorker, ptychi)
+  * "Slow LBFGS RPI"               (LBFGSWorker, cdtools)
+  * "Custom RPI Chain"             (ChainWorker) — a list of steps built in
+    "Create Custom RPI chain" (chain_editor.py). It is greyed out until the
+    chain has a step, and the chain is not kept across restarts (only in a
+    JSON saved from that window).
 
 The algorithm is chosen from a combo box in the main window; all RPI parameters
 are edited in a separate non-blocking "Setup parameters" window. The currently
@@ -34,7 +39,7 @@ import so that the correct GPU is exposed as device 0.
 from __future__ import annotations  # X | Y union syntax back to Python 3.7
 
 import os
-os.environ["PYQTGRAPH_QT_LIB"] = "PyQt5"
+os.environ["PYQTGRAPH_QT_LIB"] = "PyQt6"
 
 # ── Set GPU before any torch/cdtools import ─────────────────────────────────
 import os
@@ -43,6 +48,9 @@ import configparser as _cp
 _pre_cfg = _cp.ConfigParser()
 _pre_cfg.read(os.path.join(os.path.dirname(__file__), 'settings.ini'))
 os.environ['CUDA_VISIBLE_DEVICES'] = _pre_cfg.get('rpi', 'gpu_index', fallback='0')
+# keep Triton's current default (FP fusion on) explicitly; silences its
+# "default will change in 3.10" warning when ptychi first compiles a kernel
+os.environ.setdefault('TRITON_DEFAULT_FP_FUSION', '1')
 # ────────────────────────────────────────────────────────────────────────────
 
 import sys
@@ -55,17 +63,18 @@ from collections import deque
 import numpy as np
 
 import pyqtgraph as pg
-from PyQt5 import uic
-from PyQt5.QtWidgets import (
+from PyQt6 import uic
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QCheckBox, QLabel,
     QComboBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QLineEdit,
     QListWidget, QListWidgetItem,
 )
-from PyQt5.QtCore import Qt, QByteArray, QTimer
-from PyQt5.QtGui import QBrush, QColor
+from PyQt6.QtCore import Qt, QByteArray, QTimer
+from PyQt6.QtGui import QBrush, QColor
 
 from font_utils import apply_font_size_to_tree, DEFAULT_FONT_SIZE
+from pg_image_tools import ImagePlotWidget
 from rpi_utils import (
     load_probe_file,
     load_pixel_mask,
@@ -79,10 +88,15 @@ from rpi_utils import (
     build_config_dict,
     write_config_json,
     read_config_json,
+    master_optics_type,
+    classify_optic,
+    UNKNOWN_OPTIC,
     DEFAULT_PROBE_SHAPE,
     DEFAULT_FILL_FRACTION,
 )
 from rpi_worker import WORKER_CLASSES
+from rpi_chain import chain_to_json
+from chain_editor import ChainEditor
 from probe_viewer import ProbeViewer, DEFAULT_GEOMETRY
 
 
@@ -91,12 +105,15 @@ _UI_FILE    = Path(__file__).parent / 'rpi_live_gui.ui'
 _INI_FILE   = Path(__file__).parent / 'settings.ini'
 
 # Combo-box entries → internal method strings (index-aligned).
-_METHOD_LABELS = ['Fast conjugate gradient RPI', 'Slow LBFGS RPI']
-_METHODS       = ['CG', 'LBFGS']
+# 'CHAIN' runs the custom chain; it is never saved as the method in
+# settings.ini or a probe's parameters, since the chain itself is not kept.
+_METHOD_LABELS = ['Fast conjugate gradient RPI', 'Moderate LSQML RPI', 'Slow LBFGS RPI',
+                  'Custom RPI Chain']
+_METHODS       = ['CG', 'LSQML', 'LBFGS', 'CHAIN']
 
 # Combo-box entries → internal object-initialisation strings (index-aligned).
-# Shared by both algorithms: CG uses it directly, LBFGS maps 'flat' to
-# cdtools' 'uniform' initialisation.
+# Shared by all algorithms: CG and LSQML use it directly, LBFGS maps 'flat'
+# to cdtools' 'uniform' initialisation.
 _INIT_LABELS = ['Random', 'Flat']
 _INITS       = ['random', 'flat']
 
@@ -106,6 +123,15 @@ _INITS       = ['random', 'flat']
 _RES_MODE_LABELS    = ['Low res, good convergence', 'High res, bad convergence']
 _RES_MODES          = ['lowres', 'highres']
 _DEFAULT_OBJ_SHAPES = {'lowres': 100, 'highres': 200}
+# Detector crop (diffraction pattern size) stored per resolution mode too.
+_DEFAULT_CROP_NS    = {'lowres': 512, 'highres': 512}
+
+# LBFGS probe update (index-aligned). cdtools' RPI model keeps the probe fixed;
+# 'weights' trains its N_modes x N_modes mixing of the loaded probe modes,
+# 'full' trains every probe pixel. (ptychi has no single-pattern equivalent of
+# the mixing matrix, so LSQML only has off/full, as a checkbox.)
+_LBFGS_PROBE_UPDATE_LABELS = ['Off', 'Mode weight matrix', 'Full probe']
+_LBFGS_PROBE_UPDATES       = ['off', 'weights', 'full']
 
 # Fudge factors applied to a probe's filling fraction. Tune these here rather
 # than exposing them in the UI.
@@ -119,16 +145,20 @@ _EXIT_BTN_FONT_DELTA = 3    # EXIT is this many points larger than everything el
 # RPI parameters that can be stored per-probe (gpu_index is excluded: it is a
 # machine setting, not a probe property).
 _PROBE_PARAM_KEYS = (
-    'method', 'res_mode', 'obj_shape_lowres', 'obj_shape_highres', 'obj_init',
+    'method', 'res_mode', 'obj_shape_lowres', 'obj_shape_highres',
+    'crop_N_lowres', 'crop_N_highres', 'obj_init',
     'cg_n_iter', 'cg_clear_every', 'cg_loss_target', 'cg_probe_modes',
     'lbfgs_reg_factor1', 'lbfgs_reg_factor2_lo', 'lbfgs_reg_factor2_hi',
     'lbfgs_lr1', 'lbfgs_lr2', 'lbfgs_n_iter1', 'lbfgs_n_iter2', 'lbfgs_probe_modes',
+    'lbfgs_probe_update', 'lbfgs_probe_update_start',
+    'lsqml_n_epochs', 'lsqml_probe_modes', 'lsqml_step_scaler', 'lsqml_momentum',
+    'lsqml_update_probe', 'lsqml_probe_update_start', 'lsqml_early_stop_pct',
 )
 
 # Main-window widgets switched off while the Object Accumulator is open. Left
 # alone: the RPI Parameters group, "Setup Initial Probes and Geometry", the
 # EPICS PV field, the font size and EXIT.
-_ACCUM_LOCK_GROUPS = ('h5_group', 'detector_group', 'saving_group', 'display_group')
+_ACCUM_LOCK_GROUPS = ('h5_group', 'saving_group', 'display_group')
 _ACCUM_LOCK_WIDGETS = (
     'label_probe', 'probe_file_edit', 'probe_browse_btn',
     'label_probe_list', 'probe_list_widget',
@@ -151,6 +181,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         uic.loadUi(str(_UI_FILE), self)
 
+        # pg_image_tools viewer (lineout, measure, filters, compare, ... in the
+        # right-click menu). self.image_view stays the bare pg.ImageView.
+        self.image_plot = ImagePlotWidget(self.image_plot_container, keep_points=True)
+        self.image_view = _named(self.image_plot.image_view, 'image_view')
+        # Zoom is driven here (zoom-to-illuminated-area), not reset every frame.
+        self.image_plot.action_no_zoom_tracking.setChecked(True)
+
         # Runtime state
         self._worker                   = None
         self._results_deque: deque     = deque(maxlen=3)
@@ -164,16 +201,19 @@ class MainWindow(QMainWindow):
         self._pixel_mask_full          = None   # 2-D float32
         self._res_m_probe              = None   # float
         self._autosave_h5_path: str | None = None  # set at first frame of each run
+        self._h5_optics_checked: str | None = None  # H5 replay file whose optics_type was tried
         self._pv_viewer: _PVImageViewer | None = None
         self._accum_win                = None   # ObjectAccumulatorWindow, lazily imported
         self._prop_win                 = None   # "Propagate Probe" window
+        self._chain_win: ChainEditor | None = None  # "Custom RPI Chain" editor, built lazily
+        self._plain_method_idx         = 0      # last algo_combo index other than CHAIN
         self._prop_status_label        = None
         self._prop_applied_um          = None   # distance last pushed to a worker
         self._accum_settings: dict     = {}     # survives the window being closed
         self._closing                  = False
 
         # Beamline + detector geometry, edited in the setup window rather than
-        # on the main panel (Crop N stays on the main panel).
+        # on the main panel (Crop N lives in the RPI parameters window).
         self._geometry = dict(DEFAULT_GEOMETRY)
 
         # Reconstruction-image cursor readout state
@@ -191,14 +231,21 @@ class MainWindow(QMainWindow):
         self._build_params_window()
         self._build_propagation_window()
         self.algo_combo.addItems(_METHOD_LABELS)
+        self.algo_combo.currentIndexChanged.connect(self._on_algo_changed)
+        self._refresh_chain_option()
         self.res_mode_combo.addItems(_RES_MODE_LABELS)
 
         self._connect_signals()
         self._load_settings()
 
-        # Add Reset Zoom to reconstruction image view context menu
+        # The menu's "Auto colorscale" and the auto-colorscale checkbox are one
+        # setting. setChecked() doesn't emit triggered, so this can't loop.
+        _auto = self.image_plot.action_auto_colorscale
+        _auto.setChecked(self.autolevel_check.isChecked())
+        _auto.triggered.connect(self.autolevel_check.setChecked)
+        self.autolevel_check.toggled.connect(_auto.setChecked)
+
         _vb = self.image_view.getView()
-        _vb.menu.addAction('Reset Zoom', _vb.autoRange)
 
         # Track the cursor over the reconstruction image for the readout label.
         self._recon_vb = _vb
@@ -259,6 +306,21 @@ class MainWindow(QMainWindow):
             'Object grid used by "High res, bad convergence". Finer grid, '
             'smaller pixels, harder to converge.'
         )
+        self.crop_N_lowres_spin = self._spin(
+            64, 2048, _DEFAULT_CROP_NS['lowres'], name='crop_N_lowres_spin')
+        self.crop_N_lowres_spin.setToolTip(
+            'Detector crop size used by "Low res, good convergence". Per-run '
+            'choice, not part of the exported JSON config.')
+        self.crop_N_highres_spin = self._spin(
+            64, 2048, _DEFAULT_CROP_NS['highres'], name='crop_N_highres_spin')
+        self.crop_N_highres_spin.setToolTip(
+            'Detector crop size used by "High res, bad convergence". Per-run '
+            'choice, not part of the exported JSON config.')
+        self.n_avg_spin       = self._spin(1, 1000, 1, name='n_avg_spin')
+        self.n_avg_spin.setToolTip(
+            'Average this many consecutive diffraction patterns (H5 or PV) '
+            'into one before each reconstruction. 1 = no averaging. An '
+            'acquisition setting, not stored per probe.')
         self.gpu_index_spin   = self._spin(0, 7, 3, name='gpu_index_spin')
         self.gpu_index_spin.setToolTip('Applies at next launch (GPU is selected '
                                        'before torch is imported).')
@@ -293,15 +355,68 @@ class MainWindow(QMainWindow):
         self.n_iter2_spin       = self._spin(0, 1000, 60, name='n_iter2_spin')
         self.lbfgs_probe_modes_spin = self._spin(0, 32, 0, special='All',
                                                  name='lbfgs_probe_modes_spin')
+        self.lbfgs_probe_update_combo = _named(QComboBox(), 'lbfgs_probe_update_combo')
+        self.lbfgs_probe_update_combo.addItems(_LBFGS_PROBE_UPDATE_LABELS)
+        self.lbfgs_probe_update_combo.setToolTip(
+            'From the iteration below on (counted across both stages):\n'
+            '  Mode weight matrix: train the N_modes x N_modes mixing of the '
+            'loaded probe modes (stays close to the loaded probe).\n'
+            '  Full probe: train every probe pixel (can absorb the object on a '
+            'single pattern).\n'
+            'Each frame still starts from the loaded probe.'
+        )
+        self.lbfgs_probe_update_start_spin = self._spin(
+            0, 2000, 10, name='lbfgs_probe_update_start_spin')
+        # Slow LSQML (ptychi) parameters
+        self.lsqml_n_epochs_spin    = self._spin(1, 100000, 200, name='lsqml_n_epochs_spin')
+        self.lsqml_n_epochs_spin.setToolTip(
+            'Epoch 0 only rescales the probe intensity to the pattern; '
+            'the object is updated from epoch 1 on.'
+        )
+        self.lsqml_probe_modes_spin = self._spin(0, 32, 0, special='All',
+                                                 name='lsqml_probe_modes_spin')
+        self.lsqml_step_scaler_spin = self._dspin(0.001, 2.0, 0.9, 3, 0.05,
+                                                  name='lsqml_step_scaler_spin')
+        self.lsqml_step_scaler_spin.setToolTip(
+            'Scales the optimal object step size LSQML computes (ptychi default 0.9).')
+        self.lsqml_momentum_spin    = self._dspin(0.0, 2.0, 0.0, 3, 0.05,
+                                                  name='lsqml_momentum_spin')
+        self.lsqml_momentum_spin.setToolTip('Momentum acceleration gain (0 = off).')
+        self.lsqml_early_stop_spin  = self._dspin(0.0, 100.0, 1.0, 2, 0.5,
+                                                  name='lsqml_early_stop_spin')
+        self.lsqml_early_stop_spin.setSuffix(' %')
+        self.lsqml_early_stop_spin.setSpecialValueText('Off')
+        self.lsqml_early_stop_spin.setToolTip(
+            'Stop a frame early once the loss changes by no more than this '
+            'over 10 epochs. 0 = never stop early. With probe update on, the '
+            'check starts 10 epochs after the probe update does.'
+        )
+        self.lsqml_update_probe_check = _named(QCheckBox('Update probe'),
+                                               'lsqml_update_probe_check')
+        self.lsqml_update_probe_check.setToolTip(
+            'Let LSQML refine the probe from the epoch below on. Each frame '
+            'still starts from the loaded probe.'
+        )
+        self.lsqml_probe_update_start_spin = self._spin(
+            0, 100000, 100, name='lsqml_probe_update_start_spin')
+        # A start iteration only means something while its probe update is on.
+        self.lsqml_probe_update_start_spin.setEnabled(self.lsqml_update_probe_check.isChecked())
+        self.lsqml_update_probe_check.toggled.connect(self.lsqml_probe_update_start_spin.setEnabled)
+        self.lbfgs_probe_update_start_spin.setEnabled(self._current_lbfgs_probe_update() != 'off')
+        self.lbfgs_probe_update_combo.currentIndexChanged.connect(
+            lambda _i: self.lbfgs_probe_update_start_spin.setEnabled(
+                self._current_lbfgs_probe_update() != 'off'))
 
     # Per-probe RPI parameter set: widget getters/setters keyed by name.
     # gpu_index is intentionally excluded (a machine setting, not a probe one).
     def _get_current_rpi_params(self):
         return {
-            'method':              self._current_method(),
+            'method':              self._plain_method(),
             'res_mode':            self._current_res_mode(),
             'obj_shape_lowres':    self.obj_shape_lowres_spin.value(),
             'obj_shape_highres':   self.obj_shape_highres_spin.value(),
+            'crop_N_lowres':       self.crop_N_lowres_spin.value(),
+            'crop_N_highres':      self.crop_N_highres_spin.value(),
             'obj_init':            self._current_obj_init(),
             'cg_n_iter':           self.n_iter_spin.value(),
             'cg_clear_every':      self.clear_every_spin.value(),
@@ -315,6 +430,15 @@ class MainWindow(QMainWindow):
             'lbfgs_n_iter1':       self.n_iter1_spin.value(),
             'lbfgs_n_iter2':       self.n_iter2_spin.value(),
             'lbfgs_probe_modes':   self.lbfgs_probe_modes_spin.value(),
+            'lbfgs_probe_update':  self._current_lbfgs_probe_update(),
+            'lbfgs_probe_update_start': self.lbfgs_probe_update_start_spin.value(),
+            'lsqml_n_epochs':      self.lsqml_n_epochs_spin.value(),
+            'lsqml_probe_modes':   self.lsqml_probe_modes_spin.value(),
+            'lsqml_step_scaler':   self.lsqml_step_scaler_spin.value(),
+            'lsqml_momentum':      self.lsqml_momentum_spin.value(),
+            'lsqml_update_probe':  self.lsqml_update_probe_check.isChecked(),
+            'lsqml_probe_update_start': self.lsqml_probe_update_start_spin.value(),
+            'lsqml_early_stop_pct': self.lsqml_early_stop_spin.value(),
         }
 
     def _apply_rpi_params(self, p):
@@ -325,8 +449,12 @@ class MainWindow(QMainWindow):
         def _f(key, default):
             try:    return float(p[key])
             except (KeyError, ValueError, TypeError): return default
+        def _b(key, default):
+            # Stored as a bool in memory, as 'True'/'False' text in the ini.
+            if key not in p: return default
+            return str(p[key]).strip().lower() == 'true'
         method = p.get('method')
-        if method in _METHODS:
+        if method in _METHODS and method != 'CHAIN':
             self.algo_combo.setCurrentIndex(_METHODS.index(method))
         res_mode = p.get('res_mode')
         if res_mode in _RES_MODES:
@@ -335,6 +463,10 @@ class MainWindow(QMainWindow):
             _i('obj_shape_lowres', self.obj_shape_lowres_spin.value()))
         self.obj_shape_highres_spin.setValue(
             _i('obj_shape_highres', self.obj_shape_highres_spin.value()))
+        self.crop_N_lowres_spin.setValue(
+            _i('crop_N_lowres', self.crop_N_lowres_spin.value()))
+        self.crop_N_highres_spin.setValue(
+            _i('crop_N_highres', self.crop_N_highres_spin.value()))
         obj_init = p.get('obj_init')
         if obj_init in _INITS:
             self.obj_init_combo.setCurrentIndex(_INITS.index(obj_init))
@@ -354,6 +486,21 @@ class MainWindow(QMainWindow):
         self.n_iter1_spin.setValue(_i('lbfgs_n_iter1', self.n_iter1_spin.value()))
         self.n_iter2_spin.setValue(_i('lbfgs_n_iter2', self.n_iter2_spin.value()))
         self.lbfgs_probe_modes_spin.setValue(_i('lbfgs_probe_modes', self.lbfgs_probe_modes_spin.value()))
+        lbfgs_pu = p.get('lbfgs_probe_update')
+        if lbfgs_pu in _LBFGS_PROBE_UPDATES:
+            self.lbfgs_probe_update_combo.setCurrentIndex(_LBFGS_PROBE_UPDATES.index(lbfgs_pu))
+        self.lbfgs_probe_update_start_spin.setValue(
+            _i('lbfgs_probe_update_start', self.lbfgs_probe_update_start_spin.value()))
+        self.lsqml_n_epochs_spin.setValue(_i('lsqml_n_epochs', self.lsqml_n_epochs_spin.value()))
+        self.lsqml_probe_modes_spin.setValue(_i('lsqml_probe_modes', self.lsqml_probe_modes_spin.value()))
+        self.lsqml_step_scaler_spin.setValue(_f('lsqml_step_scaler', self.lsqml_step_scaler_spin.value()))
+        self.lsqml_momentum_spin.setValue(_f('lsqml_momentum', self.lsqml_momentum_spin.value()))
+        self.lsqml_update_probe_check.setChecked(
+            _b('lsqml_update_probe', self.lsqml_update_probe_check.isChecked()))
+        self.lsqml_probe_update_start_spin.setValue(
+            _i('lsqml_probe_update_start', self.lsqml_probe_update_start_spin.value()))
+        self.lsqml_early_stop_spin.setValue(
+            _f('lsqml_early_stop_pct', self.lsqml_early_stop_spin.value()))
 
     @staticmethod
     def _format_rpi_params(p):
@@ -363,14 +510,32 @@ class MainWindow(QMainWindow):
             f"method: {p.get('method', '?')}     res mode: {p.get('res_mode', '?')}     "
             f"obj init: {p.get('obj_init', '?')}\n"
             f"obj shape: low={p.get('obj_shape_lowres', '?')}  "
-            f"high={p.get('obj_shape_highres', '?')}\n"
+            f"high={p.get('obj_shape_highres', '?')}     "
+            f"crop N: low={p.get('crop_N_lowres', '?')}  "
+            f"high={p.get('crop_N_highres', '?')}\n"
             f"[CG]    n_iter={p.get('cg_n_iter', '?')}  clear_every={p.get('cg_clear_every', '?')}  "
             f"loss_target={p.get('cg_loss_target', '?')}  probe_modes={p.get('cg_probe_modes', '?')}\n"
             f"[LBFGS] reg={p.get('lbfgs_reg_factor1', '?')}/{p.get('lbfgs_reg_factor2_lo', '?')}/"
             f"{p.get('lbfgs_reg_factor2_hi', '?')}  lr={p.get('lbfgs_lr1', '?')}/{p.get('lbfgs_lr2', '?')}  "
             f"n_iter={p.get('lbfgs_n_iter1', '?')}/{p.get('lbfgs_n_iter2', '?')}  "
-            f"probe_modes={p.get('lbfgs_probe_modes', '?')}"
+            f"probe_modes={p.get('lbfgs_probe_modes', '?')}  "
+            f"{MainWindow._probe_update_text(p.get('lbfgs_probe_update', 'off'), p.get('lbfgs_probe_update_start'))}\n"
+            f"[LSQML] epochs={p.get('lsqml_n_epochs', '?')}  "
+            f"step_scaler={p.get('lsqml_step_scaler', '?')}  "
+            f"momentum={p.get('lsqml_momentum', '?')}  "
+            f"early_stop={p.get('lsqml_early_stop_pct', '?')}%  "
+            f"probe_modes={p.get('lsqml_probe_modes', '?')}  "
+            f"{MainWindow._probe_update_text(
+                'full' if str(p.get('lsqml_update_probe', False)).strip().lower() == 'true' else 'off',
+                p.get('lsqml_probe_update_start'))}"
         )
+
+    @staticmethod
+    def _probe_update_text(mode, start):
+        if mode == 'off':
+            return 'probe fixed'
+        what = 'probe mode weights' if mode == 'weights' else 'probe'
+        return f"{what} updated from {start if start is not None else '?'}"
 
     def _build_params_window(self):
         """Non-blocking window: editable params on top, one column per method,
@@ -379,17 +544,38 @@ class MainWindow(QMainWindow):
         win = QDialog(self)
         win.setObjectName('params_win')
         win.setWindowTitle('RPI Parameters')
-        win.setWindowFlags(win.windowFlags() | Qt.Window)
+        win.setWindowFlags(win.windowFlags() | Qt.WindowType.Window)
         outer = QVBoxLayout(win)
 
         common_box = _named(QGroupBox('Common'), 'common_box')
-        cf = QFormLayout(common_box)
-        cf.addRow(_named(QLabel(f'Obj shape — {_RES_MODE_LABELS[0]}:'), 'label_obj_lowres'),
-                  self.obj_shape_lowres_spin)
-        cf.addRow(_named(QLabel(f'Obj shape — {_RES_MODE_LABELS[1]}:'), 'label_obj_highres'),
-                  self.obj_shape_highres_spin)
+        cvl = QVBoxLayout(common_box)
+        two_cols = QHBoxLayout()
+        crop_form = QFormLayout()
+        crop_form.addRow(_named(QLabel('Detector crop'), 'label_crop_head'))
+        crop_form.addRow(_named(QLabel(f'{_RES_MODE_LABELS[0]}:'), 'label_crop_lowres'),
+                         self.crop_N_lowres_spin)
+        crop_form.addRow(_named(QLabel(f'{_RES_MODE_LABELS[1]}:'), 'label_crop_highres'),
+                         self.crop_N_highres_spin)
+        two_cols.addLayout(crop_form)
+        obj_form = QFormLayout()
+        obj_form.addRow(_named(QLabel('Obj shape'), 'label_obj_head'))
+        obj_form.addRow(_named(QLabel(f'{_RES_MODE_LABELS[0]}:'), 'label_obj_lowres'),
+                        self.obj_shape_lowres_spin)
+        obj_form.addRow(_named(QLabel(f'{_RES_MODE_LABELS[1]}:'), 'label_obj_highres'),
+                        self.obj_shape_highres_spin)
+        two_cols.addLayout(obj_form)
+        cvl.addLayout(two_cols)
+        cf = QFormLayout()
         cf.addRow(_named(QLabel('Obj init:'), 'label_obj_init'), self.obj_init_combo)
+        cf.addRow(_named(QLabel('Average N patterns:'), 'label_n_avg'), self.n_avg_spin)
         cf.addRow(_named(QLabel('GPU index:'), 'label_gpu'), self.gpu_index_spin)
+        cvl.addLayout(cf)
+        chain_btn = _named(QPushButton('Create Custom RPI chain'), 'create_chain_btn')
+        chain_btn.setToolTip(
+            'Build a list of CG / LSQML / LBFGS steps run in order on each '
+            'frame, selectable as "Custom RPI Chain" in the main window.')
+        chain_btn.clicked.connect(self._on_open_chain)
+        cvl.addWidget(chain_btn)
         outer.addWidget(common_box)
 
         cols = QHBoxLayout()
@@ -402,7 +588,20 @@ class MainWindow(QMainWindow):
         cgf.addRow(_named(QLabel('Probe modes:'), 'label_cg_modes'), self.cg_probe_modes_spin)
         cols.addWidget(cg_box)
 
-        lb_box = _named(QGroupBox(_METHOD_LABELS[1]), 'lb_box')
+        lsq_box = _named(QGroupBox(_METHOD_LABELS[1]), 'lsqml_box')
+        lsf = QFormLayout(lsq_box)
+        lsf.addRow(_named(QLabel('N epochs:'), 'label_lsq_nep'),          self.lsqml_n_epochs_spin)
+        lsf.addRow(_named(QLabel('Object step scaler:'), 'label_lsq_step'), self.lsqml_step_scaler_spin)
+        lsf.addRow(_named(QLabel('Momentum gain:'), 'label_lsq_mom'),     self.lsqml_momentum_spin)
+        lsf.addRow(_named(QLabel('Early stop (Δloss / 10 ep):'), 'label_lsq_es'),
+                   self.lsqml_early_stop_spin)
+        lsf.addRow(_named(QLabel('Probe modes:'), 'label_lsq_modes'),     self.lsqml_probe_modes_spin)
+        lsf.addRow(self.lsqml_update_probe_check)
+        lsf.addRow(_named(QLabel('Probe update from epoch:'), 'label_lsq_pu_start'),
+                   self.lsqml_probe_update_start_spin)
+        cols.addWidget(lsq_box)
+
+        lb_box = _named(QGroupBox(_METHOD_LABELS[2]), 'lb_box')
         lbf = QFormLayout(lb_box)
         lbf.addRow(_named(QLabel('Reg factor 1:'), 'label_lb_reg1'),    self.reg1_edit)
         lbf.addRow(_named(QLabel('Reg factor 2 lo:'), 'label_lb_reg2lo'), self.reg2_lo_edit)
@@ -412,6 +611,10 @@ class MainWindow(QMainWindow):
         lbf.addRow(_named(QLabel('N iter 1:'), 'label_lb_n1'),         self.n_iter1_spin)
         lbf.addRow(_named(QLabel('N iter 2:'), 'label_lb_n2'),         self.n_iter2_spin)
         lbf.addRow(_named(QLabel('Probe modes:'), 'label_lb_modes'),   self.lbfgs_probe_modes_spin)
+        lbf.addRow(_named(QLabel('Probe update:'), 'label_lb_pu'),
+                   self.lbfgs_probe_update_combo)
+        lbf.addRow(_named(QLabel('Probe update from iter:'), 'label_lb_pu_start'),
+                   self.lbfgs_probe_update_start_spin)
         cols.addWidget(lb_box)
 
         outer.addLayout(cols)
@@ -445,7 +648,7 @@ class MainWindow(QMainWindow):
         self._saved_params_label = _named(QLabel('No probe selected.'), 'saved_params_label')
         self._saved_params_label.setWordWrap(True)
         self._saved_params_label.setStyleSheet('font-family: monospace;')
-        self._saved_params_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._saved_params_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         sv.addWidget(self._saved_params_label)
         pv.addWidget(saved_box)
 
@@ -471,7 +674,7 @@ class MainWindow(QMainWindow):
         win = QDialog(self)
         win.setObjectName('prop_win')
         win.setWindowTitle('Propagate Probe')
-        win.setWindowFlags(win.windowFlags() | Qt.Window)
+        win.setWindowFlags(win.windowFlags() | Qt.WindowType.Window)
         outer = QVBoxLayout(win)
 
         form = QFormLayout()
@@ -593,17 +796,43 @@ class MainWindow(QMainWindow):
     def _current_method(self):
         return _METHODS[self.algo_combo.currentIndex()]
 
+    def _plain_method(self):
+        """The selected method, or the last one before CHAIN was picked —
+        what settings.ini and per-probe parameters store."""
+        return _METHODS[self._plain_method_idx]
+
+    def _current_lbfgs_probe_update(self):
+        return _LBFGS_PROBE_UPDATES[max(0, self.lbfgs_probe_update_combo.currentIndex())]
+
     def _current_obj_init(self):
         return _INITS[self.obj_init_combo.currentIndex()]
 
     def _current_res_mode(self):
         return _RES_MODES[max(0, self.res_mode_combo.currentIndex())]
 
-    def _current_obj_shape(self):
+    def _res_mode_crop_N(self):
+        """Detector crop size implied by the resolution combo."""
+        if self._current_res_mode() == 'highres':
+            return self.crop_N_highres_spin.value()
+        return self.crop_N_lowres_spin.value()
+
+    def _res_mode_obj_shape(self):
         """Object grid size implied by the resolution combo."""
         if self._current_res_mode() == 'highres':
             return self.obj_shape_highres_spin.value()
         return self.obj_shape_lowres_spin.value()
+
+    def _current_crop_N(self):
+        """Detector crop size of the next run: the chain's when it is selected."""
+        if self._current_method() == 'CHAIN' and self._chain_is_set():
+            return self._chain_win.common()['crop_N']
+        return self._res_mode_crop_N()
+
+    def _current_obj_shape(self):
+        """Object grid size of the next run: the chain's when it is selected."""
+        if self._current_method() == 'CHAIN' and self._chain_is_set():
+            return self._chain_win.common()['obj_shape']
+        return self._res_mode_obj_shape()
 
     def _refresh_params_probe_list(self):
         """Repopulate the Setup-window probe list from the current library."""
@@ -666,18 +895,81 @@ class MainWindow(QMainWindow):
         self._params_win.activateWindow()
 
     # ------------------------------------------------------------------ #
+    # Custom RPI chain                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _chain_is_set(self):
+        return self._chain_win is not None and self._chain_win.is_set()
+
+    def _chain_errors(self):
+        if not self._chain_is_set():
+            return ['No custom RPI chain is set. Build one with "Create Custom '
+                    'RPI chain" in the RPI Parameters window.']
+        return self._chain_win.errors()
+
+    def _chain_common_defaults(self):
+        """Common chain parameters taken from the RPI Parameters window."""
+        return {
+            'n_probe_modes': 0,
+            'crop_N':        self._res_mode_crop_N(),
+            'obj_shape':     self._res_mode_obj_shape(),
+            'obj_init':      self._current_obj_init(),
+            'n_avg':         self.n_avg_spin.value(),
+        }
+
+    def _on_open_chain(self):
+        if self._chain_win is None:
+            self._chain_win = ChainEditor(self._chain_common_defaults,
+                                          self._get_current_rpi_params, self)
+            self._chain_win.chain_changed.connect(self._refresh_chain_option)
+        apply_font_size_to_tree(self._chain_win, self._current_font_size())
+        self._chain_win.show()
+        self._chain_win.raise_()
+        self._chain_win.activateWindow()
+
+    def _refresh_chain_option(self):
+        """Grey out "Custom RPI Chain" while no chain is set.
+
+        If the chain is wiped while it is selected, fall back to the last
+        other method — unless a run is in progress (the combo is disabled
+        then); the run keeps its own copy and this is redone when it ends.
+        """
+        is_set = self._chain_is_set()
+        self.algo_combo.model().item(_METHODS.index('CHAIN')).setEnabled(is_set)
+        if (not is_set and self._current_method() == 'CHAIN'
+                and self.algo_combo.isEnabled()):
+            self.algo_combo.setCurrentIndex(self._plain_method_idx)
+
+    def _on_algo_changed(self, idx):
+        if _METHODS[idx] != 'CHAIN':
+            self._plain_method_idx = idx
+        # The chain brings its own crop and object shape.
+        self.res_mode_combo.setEnabled(
+            self.algo_combo.isEnabled() and _METHODS[idx] != 'CHAIN')
+
+    def _set_method_controls_enabled(self, enabled):
+        """algo/res-mode combos: off while a run is in progress."""
+        self.algo_combo.setEnabled(enabled)
+        self.res_mode_combo.setEnabled(enabled and self._current_method() != 'CHAIN')
+        if enabled:
+            self._refresh_chain_option()
+
+    # ------------------------------------------------------------------ #
     # Signal wiring                                                        #
     # ------------------------------------------------------------------ #
 
     def _connect_signals(self):
         # Browse buttons
+        self.base_path_browse_btn.clicked.connect(self._browse_base_path)
         self.probe_browse_btn.clicked.connect(
-            lambda: self._browse_file(self.probe_file_edit, 'HDF5 (*.h5 *.hdf5)'))
+            lambda: self._browse_file(self.probe_file_edit, 'HDF5 (*.h5 *.hdf5)',
+                                      self.browse_dir('probe')))
         self.pixel_mask_browse_btn.clicked.connect(
             lambda: self._browse_file(self.pixel_mask_file_edit, 'HDF5 (*.h5 *.hdf5)'))
         self.save_dir_browse_btn.clicked.connect(self._browse_save_dir)
         self.h5_browse_btn.clicked.connect(
-            lambda: self._browse_file(self.h5_file_edit, 'HDF5 (*.h5 *.hdf5)'))
+            lambda: self._browse_file(self.h5_file_edit, 'HDF5 (*.h5 *.hdf5)',
+                                      self.browse_dir('h5')))
 
         # H5 replay toggle
         self.h5_check.toggled.connect(self._on_h5_toggled)
@@ -688,6 +980,7 @@ class MainWindow(QMainWindow):
         # Reload probe/mask when paths change
         self.probe_file_edit.editingFinished.connect(self._try_load_probe)
         self.pixel_mask_file_edit.editingFinished.connect(self._try_load_mask)
+        self.h5_file_edit.editingFinished.connect(self._on_h5_file_set)
 
         # RPI parameters window
         self.setup_params_btn.clicked.connect(self._on_setup_params)
@@ -724,15 +1017,17 @@ class MainWindow(QMainWindow):
         def _get(section, key, fallback):
             return cfg.get(section, key, fallback=fallback)
 
+        self.base_path_edit.setText(         _get('paths',    'base_path',        ''))
         self.probe_file_edit.setText(        _get('paths',    'probe_file',       ''))
         self.pixel_mask_file_edit.setText(   _get('paths',    'pixel_mask_file',  ''))
         self.pv_name_edit.setText(           _get('epics',    'pv_name',          ''))
         self.save_dir_edit.setText(          _get('paths',    'save_dir',         ''))
         self.h5_check.setChecked(            _get('h5_replay', 'enabled',          'false').lower() == 'true')
         self.h5_file_edit.setText(           _get('h5_replay', 'h5_file',          ''))
+        # The restored probe already goes with the restored file.
+        self._h5_optics_checked = self.h5_file_edit.text().strip()
         self.h5_start_spin.setValue(    int(  _get('h5_replay', 'h5_start_idx',     '0')))
         self.h5_stride_spin.setValue(   int(  _get('h5_replay', 'h5_stride',        '1')))
-        self.crop_N_spin.setValue(      int(  _get('detector','crop_N',           '512')))
         self._on_h5_toggled(self.h5_check.isChecked())
 
         # ---- Beamline / detector geometry (edited in the setup window) ----
@@ -751,17 +1046,25 @@ class MainWindow(QMainWindow):
                  legacy_shape or str(_DEFAULT_OBJ_SHAPES['lowres']))))
         self.obj_shape_highres_spin.setValue(int(
             _get('rpi', 'obj_shape_highres', str(_DEFAULT_OBJ_SHAPES['highres']))))
+        # Legacy fallback: crop_N used to be one setting in [detector].
+        legacy_crop = _get('detector', 'crop_N', '')
+        self.crop_N_lowres_spin.setValue(int(
+            _get('rpi', 'crop_N_lowres', legacy_crop or str(_DEFAULT_CROP_NS['lowres']))))
+        self.crop_N_highres_spin.setValue(int(
+            _get('rpi', 'crop_N_highres', legacy_crop or str(_DEFAULT_CROP_NS['highres']))))
         res_mode = _get('rpi', 'res_mode', 'lowres')
         self.res_mode_combo.setCurrentIndex(
             _RES_MODES.index(res_mode) if res_mode in _RES_MODES else 0)
         self.gpu_index_spin.setValue(   int(  _get('rpi', 'gpu_index',    '3')))
+        self.n_avg_spin.setValue(       int(  _get('rpi', 'n_avg',        '1')))
         self.probe_prop_um_spin.setValue(float(_get('rpi', 'probe_propagation_um', '0')))
         obj_init = _get('rpi', 'obj_init', 'flat')
         self.obj_init_combo.setCurrentIndex(
             _INITS.index(obj_init) if obj_init in _INITS else _INITS.index('flat')
         )
         method = _get('rpi', 'method', 'CG')
-        self.algo_combo.setCurrentIndex(_METHODS.index(method) if method in _METHODS else 0)
+        self.algo_combo.setCurrentIndex(
+            _METHODS.index(method) if method in _METHODS and method != 'CHAIN' else 0)
         # Legacy fallback: probe_modes used to be a single common setting.
         legacy_modes = _get('rpi', 'probe_modes', '0')
 
@@ -780,6 +1083,22 @@ class MainWindow(QMainWindow):
         self.n_iter1_spin.setValue(     int(  _get('rpi_lbfgs', 'n_iter1',        '20')))
         self.n_iter2_spin.setValue(     int(  _get('rpi_lbfgs', 'n_iter2',        '60')))
         self.lbfgs_probe_modes_spin.setValue(int(_get('rpi_lbfgs', 'probe_modes', legacy_modes)))
+        lbfgs_pu = _get('rpi_lbfgs', 'probe_update', 'off')
+        self.lbfgs_probe_update_combo.setCurrentIndex(
+            _LBFGS_PROBE_UPDATES.index(lbfgs_pu) if lbfgs_pu in _LBFGS_PROBE_UPDATES else 0)
+        self.lbfgs_probe_update_start_spin.setValue(
+            int(_get('rpi_lbfgs', 'probe_update_start', '10')))
+
+        # ---- RPI: LSQML ----
+        self.lsqml_n_epochs_spin.setValue(   int(  _get('rpi_lsqml', 'n_epochs',     '200')))
+        self.lsqml_probe_modes_spin.setValue(int(  _get('rpi_lsqml', 'probe_modes',  legacy_modes)))
+        self.lsqml_step_scaler_spin.setValue(float(_get('rpi_lsqml', 'step_scaler',  '0.9')))
+        self.lsqml_momentum_spin.setValue(   float(_get('rpi_lsqml', 'momentum',     '0.0')))
+        self.lsqml_update_probe_check.setChecked(
+            _get('rpi_lsqml', 'update_probe', 'false').lower() == 'true')
+        self.lsqml_probe_update_start_spin.setValue(
+            int(_get('rpi_lsqml', 'probe_update_start', '100')))
+        self.lsqml_early_stop_spin.setValue(float(_get('rpi_lsqml', 'early_stop_pct', '1.0')))
 
         # ---- Display ----
         self.unwrap_check.setChecked(         _get('display', 'unwrap',     'false').lower() == 'true')
@@ -832,7 +1151,7 @@ class MainWindow(QMainWindow):
         # Line edits: keep the tooltip in sync with the (possibly truncated)
         # text so hovering always reveals the full value. Restricted to our own
         # fields (pyqtgraph's ImageView has many internal QLineEdits).
-        for le in (self.probe_file_edit,
+        for le in (self.base_path_edit, self.probe_file_edit,
                    self.pixel_mask_file_edit, self.pv_name_edit,
                    self.save_dir_edit, self.h5_file_edit,
                    self.loss_target_edit, self.reg1_edit, self.reg2_lo_edit,
@@ -843,6 +1162,7 @@ class MainWindow(QMainWindow):
     def _save_settings(self):
         cfg = configparser.ConfigParser()
         cfg['paths']    = {
+            'base_path':        self.base_path_edit.text(),
             'probe_file':       self.probe_file_edit.text(),
             'pixel_mask_file':  self.pixel_mask_file_edit.text(),
             'save_dir':         self.save_dir_edit.text(),
@@ -861,15 +1181,17 @@ class MainWindow(QMainWindow):
         cfg['detector'] = {
             'beam_center_y': str(self._geometry['beam_center_y']),
             'beam_center_x': str(self._geometry['beam_center_x']),
-            'crop_N':        str(self.crop_N_spin.value()),
         }
         cfg['rpi']      = {
             'obj_shape_lowres':    str(self.obj_shape_lowres_spin.value()),
             'obj_shape_highres':   str(self.obj_shape_highres_spin.value()),
+            'crop_N_lowres':       str(self.crop_N_lowres_spin.value()),
+            'crop_N_highres':      str(self.crop_N_highres_spin.value()),
             'res_mode':            self._current_res_mode(),
             'obj_init':            self._current_obj_init(),
             'gpu_index':           str(self.gpu_index_spin.value()),
-            'method':              self._current_method(),
+            'n_avg':               str(self.n_avg_spin.value()),
+            'method':              self._plain_method(),
             'probe_propagation_um': str(self.probe_prop_um_spin.value()),
         }
         cfg['rpi_cg']   = {
@@ -887,6 +1209,17 @@ class MainWindow(QMainWindow):
             'n_iter1':        str(self.n_iter1_spin.value()),
             'n_iter2':        str(self.n_iter2_spin.value()),
             'probe_modes':    str(self.lbfgs_probe_modes_spin.value()),
+            'probe_update':   self._current_lbfgs_probe_update(),
+            'probe_update_start': str(self.lbfgs_probe_update_start_spin.value()),
+        }
+        cfg['rpi_lsqml'] = {
+            'n_epochs':       str(self.lsqml_n_epochs_spin.value()),
+            'probe_modes':    str(self.lsqml_probe_modes_spin.value()),
+            'step_scaler':    str(self.lsqml_step_scaler_spin.value()),
+            'momentum':       str(self.lsqml_momentum_spin.value()),
+            'update_probe':   str(self.lsqml_update_probe_check.isChecked()).lower(),
+            'probe_update_start': str(self.lsqml_probe_update_start_spin.value()),
+            'early_stop_pct': str(self.lsqml_early_stop_spin.value()),
         }
         cfg['display']  = {
             'unwrap':     str(self.unwrap_check.isChecked()).lower(),
@@ -976,7 +1309,8 @@ class MainWindow(QMainWindow):
         return self.spinBox_fontSize.value()
 
     def _on_font_size_changed(self, size):
-        for w in (self, self._params_win, self._pv_viewer, self._accum_win):
+        for w in (self, self._params_win, self._pv_viewer, self._accum_win,
+                  self._chain_win):
             if w is not None:
                 apply_font_size_to_tree(w, size)
         # EXIT is deliberately oversized; this must run *after* the tree pass,
@@ -998,7 +1332,7 @@ class MainWindow(QMainWindow):
         an informed choice."""
         dlg = _ConfigLoadDialog(self._probe_choices, self._geometry, self)
         apply_font_size_to_tree(dlg, self._current_font_size())
-        dlg.exec_()
+        dlg.exec()
         if dlg.choice != _ConfigLoadDialog.IMPORT_JSON:
             return
         path, _ = QFileDialog.getOpenFileName(
@@ -1025,8 +1359,8 @@ class MainWindow(QMainWindow):
             self, 'Export configuration',
             'Export the current probe list and geometry to a JSON file?\n\n'
             '(settings.ini has already been saved either way.)',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        ) != QMessageBox.Yes:
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
             return
         path, _ = QFileDialog.getSaveFileName(
             self, 'Export Configuration', '', 'JSON files (*.json)'
@@ -1075,31 +1409,151 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._set_status(f'Mask load error: {exc}')
 
+    def _on_h5_file_set(self):
+        """A new raw master file picks the initial probe matching its
+        zone plate's optics_type. Preprocessed files, or a master without
+        that attribute, are left alone; a failed match is one terminal line."""
+        path = self.h5_file_edit.text().strip()
+        if path == self._h5_optics_checked:
+            return
+        self._h5_optics_checked = path
+        if not Path(path).is_file():
+            return
+        try:
+            optics_type = master_optics_type(path)
+        except Exception:
+            return
+        if optics_type is None:
+            return
+        try:
+            self._select_probe_for_optic(classify_optic(optics_type), path)
+        except Exception as exc:
+            print(f'optics_type "{optics_type}": no initial probe set ({exc})',
+                  flush=True)
+
+    def _select_probe_for_optic(self, optic, h5_path):
+        """Make the first enabled probe whose name classifies as `optic` the
+        active one (raises with a short reason otherwise). The current probe
+        is kept if it already matches; among the rest, the one whose file
+        shares the longest path with the H5 file (same experiment) wins."""
+        if optic == UNKNOWN_OPTIC:
+            raise ValueError('unrecognised optic')
+        if self._worker and self._worker.isRunning():
+            raise RuntimeError('reconstruction is running')
+        matches = [c for c in self._probe_choices
+                   if c.get('enabled', True) and classify_optic(c['name']) == optic]
+        if not matches:
+            raise LookupError(f'no probe named like {optic}')
+        if any(c['path'] == self._probe_path for c in matches):
+            return
+        h5_parts = Path(h5_path).resolve().parts
+
+        def _shared(c):
+            n = 0
+            for a, b in zip(Path(c['path']).resolve().parts, h5_parts):
+                if a != b:
+                    break
+                n += 1
+            return n
+        matches.sort(key=_shared, reverse=True)   # stable: list order breaks ties
+        for c in matches:
+            data = self._probe_data_cache.get(c['path'])
+            if data is None:
+                try:
+                    probe, res_m = load_probe_file(c['path'])
+                except Exception:
+                    continue
+                data = self._probe_data_cache[c['path']] = {'probe': probe,
+                                                            'res_m': res_m}
+            self._probe_raw   = data['probe']
+            self._probe_path  = c['path']
+            self._res_m_probe = data['res_m']
+            self.probe_file_edit.setText(c['path'])
+            self._refresh_probe_list_widget()
+            self._rerender_last()
+            self._set_status(f'Probe set from optics_type ({optic}): “{c["name"]}”')
+            return
+        raise OSError(f'no {optic} probe file could be loaded')
+
     # ------------------------------------------------------------------ #
     # Browse helpers                                                       #
     # ------------------------------------------------------------------ #
 
-    def _browse_file(self, line_edit, file_filter):
+    def browse_dir(self, kind):
+        """Starting folder for a file browser, derived from the base path.
+
+        kind: 'probe' -> <base>/ptychi_recons/
+              'save'  -> <base>/rpi_recons/rpi_live/, created if missing
+              'h5'    -> <base>/preproc/, else <base>/ptycho/
+        A folder that does not exist falls back to its nearest existing
+        parent. Returns None when no base path is set, so callers keep their
+        own default (usually the folder of the current field's value).
+        """
+        text = self.base_path_edit.text().strip()
+        if not text:
+            return None
+        base = Path(text).expanduser()
+        if kind == 'probe':
+            target = base / 'ptychi_recons'
+        elif kind == 'save':
+            target = base / 'rpi_recons' / 'rpi_live'
+            # Only under a base that exists — a typo in the base path should
+            # not quietly build a new directory tree.
+            if base.is_dir() and not target.is_dir():
+                try:
+                    target.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    self._set_status(f'Could not create {target}: {exc}')
+        elif kind == 'h5':
+            target = base / 'preproc'
+            if not target.is_dir() and (base / 'ptycho').is_dir():
+                target = base / 'ptycho'
+        else:
+            target = base
+        return self._existing_ancestor(target)
+
+    @staticmethod
+    def _existing_ancestor(p):
+        """p itself if it is a directory, else its nearest existing parent
+        (as a str), or '' when nothing on the way up exists."""
+        for d in (p, *p.parents):
+            if d.is_dir():
+                return str(d)
+        return ''
+
+    def _browse_base_path(self):
+        dlg = QFileDialog(self)
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dlg.setFileMode(QFileDialog.FileMode.Directory)
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dlg.setDirectory(self._start_dir_from_edit(self.base_path_edit))
+        if dlg.exec():
+            self.base_path_edit.setText(dlg.selectedFiles()[0])
+
+    def _browse_file(self, line_edit, file_filter, start_dir=None):
         # Instantiate directly so setDirectory() is honoured — the static
         # helpers on some Linux/Qt builds ignore the directory argument even
         # with DontUseNativeDialog.
         dlg = QFileDialog(self)
-        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
-        dlg.setFileMode(QFileDialog.ExistingFile)
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
         dlg.setNameFilter(file_filter)
-        dlg.setDirectory(self._start_dir_from_edit(line_edit))
-        if dlg.exec_():
+        dlg.setDirectory(start_dir if start_dir is not None
+                         else self._start_dir_from_edit(line_edit))
+        if dlg.exec():
             path = dlg.selectedFiles()[0]
             line_edit.setText(path)
             line_edit.editingFinished.emit()
 
     def _browse_save_dir(self):
         dlg = QFileDialog(self)
-        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
-        dlg.setFileMode(QFileDialog.Directory)
-        dlg.setOption(QFileDialog.ShowDirsOnly, True)
-        dlg.setDirectory(self._start_dir_from_edit(self.save_dir_edit))
-        if dlg.exec_():
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dlg.setFileMode(QFileDialog.FileMode.Directory)
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        start_dir = self.browse_dir('save')
+        dlg.setDirectory(start_dir if start_dir is not None
+                         else self._start_dir_from_edit(self.save_dir_edit))
+        if dlg.exec():
             self.save_dir_edit.setText(dlg.selectedFiles()[0])
 
     @staticmethod
@@ -1174,8 +1628,7 @@ class MainWindow(QMainWindow):
             self._worker.stop()
             self._worker.wait()
             self.start_btn.setText('Start')
-            self.algo_combo.setEnabled(True)
-            self.res_mode_combo.setEnabled(True)
+            self._set_method_controls_enabled(True)
             self._set_status('Stopped.')
             self._prop_applied_um = None
             self._update_prop_status()
@@ -1197,6 +1650,11 @@ class MainWindow(QMainWindow):
         if self.autosave_check.isChecked() and not self.save_dir_edit.text().strip():
             QMessageBox.warning(self, 'No save dir',
                                 'Set a save directory before enabling auto-save.')
+            return
+        if self._current_method() == 'CHAIN' and self._chain_errors():
+            QMessageBox.warning(self, 'Custom RPI chain',
+                                'Fix the custom RPI chain first:\n\n'
+                                + '\n'.join(self._chain_errors()))
             return
 
         probe_for_worker = self.prepare_probe_for_run()
@@ -1226,10 +1684,14 @@ class MainWindow(QMainWindow):
 
         self._worker.start()
         self.start_btn.setText('Stop')
-        self.algo_combo.setEnabled(False)   # algorithm is fixed while running
-        self.res_mode_combo.setEnabled(False)
+        self._set_method_controls_enabled(False)   # algorithm is fixed while running
+        if params['method'] == 'CHAIN':
+            n = len(params['chain_steps'])
+            detail = f'{n} step{"s" if n != 1 else ""}'
+        else:
+            detail = _RES_MODE_LABELS[self.res_mode_combo.currentIndex()]
         self._set_status(f'Starting… ({_METHOD_LABELS[self.algo_combo.currentIndex()]}, '
-                         f'{_RES_MODE_LABELS[self.res_mode_combo.currentIndex()]})')
+                         f'{detail})')
         self._update_prop_status()
 
     def _propagated_probe(self):
@@ -1272,15 +1734,14 @@ class MainWindow(QMainWindow):
 
     def _on_worker_finished(self):
         self.start_btn.setText('Start')
-        self.algo_combo.setEnabled(True)
-        self.res_mode_combo.setEnabled(True)
+        self._set_method_controls_enabled(True)
         self._prop_applied_um = None
         self._update_prop_status()
 
     def _collect_params(self):
         """Read all relevant GUI fields into a plain dict for the worker.
 
-        Returns a superset containing both algorithms' parameters plus the
+        Returns a superset containing every algorithm's parameters plus the
         selected 'method'; each backend uses only the keys it needs.
         """
         def _safe_float(text, default):
@@ -1290,13 +1751,20 @@ class MainWindow(QMainWindow):
                 return default
 
         method = self._current_method()
-        # Probe modes is now per-algorithm; pick the active algorithm's value.
-        n_probe_modes = (self.cg_probe_modes_spin.value() if method == 'CG'
-                         else self.lbfgs_probe_modes_spin.value())
+        if method == 'CHAIN':
+            chain_common, chain_steps = self._chain_win.snapshot()
+            n_probe_modes = chain_common['n_probe_modes']
+        else:
+            # Probe modes is per-algorithm; pick the active algorithm's value.
+            n_probe_modes = {
+                'CG':    self.cg_probe_modes_spin,
+                'LBFGS': self.lbfgs_probe_modes_spin,
+                'LSQML': self.lsqml_probe_modes_spin,
+            }[method].value()
         probe_entry = self._active_probe_entry()
         probe_shape, fill_fraction = self._active_probe_geometry()
 
-        return {
+        params = {
             'method':           method,
             'pv_name':          self.pv_name_edit.text().strip(),
             'h5_mode':          self.h5_check.isChecked(),
@@ -1305,11 +1773,12 @@ class MainWindow(QMainWindow):
             'h5_stride':        self.h5_stride_spin.value(),
             'beam_cy':          self._geometry['beam_center_y'],
             'beam_cx':          self._geometry['beam_center_x'],
-            'crop_N':           self.crop_N_spin.value(),
+            'crop_N':           self._current_crop_N(),
             'res_mode':         self._current_res_mode(),
             'obj_shape':        self._current_obj_shape(),
             'obj_init':         self._current_obj_init(),
             'gpu_index':        self.gpu_index_spin.value(),
+            'n_avg':            self.n_avg_spin.value(),
             'n_probe_modes':    n_probe_modes,  # 0 = use all
             'allow_repeat_frames': self.allow_repeat_check.isChecked(),
             # --- CG params ---
@@ -1324,6 +1793,15 @@ class MainWindow(QMainWindow):
             'lr2':              self.lr2_spin.value(),
             'n_iter1':          self.n_iter1_spin.value(),
             'n_iter2':          self.n_iter2_spin.value(),
+            'lbfgs_probe_update':       self._current_lbfgs_probe_update(),
+            'lbfgs_probe_update_start': self.lbfgs_probe_update_start_spin.value(),
+            # --- LSQML params ---
+            'lsqml_n_epochs':           self.lsqml_n_epochs_spin.value(),
+            'lsqml_step_scaler':        self.lsqml_step_scaler_spin.value(),
+            'lsqml_momentum':           self.lsqml_momentum_spin.value(),
+            'lsqml_update_probe':       self.lsqml_update_probe_check.isChecked(),
+            'lsqml_probe_update_start': self.lsqml_probe_update_start_spin.value(),
+            'lsqml_early_stop_pct':     self.lsqml_early_stop_spin.value(),
             # --- shared app / beamline ---
             'deque_length':     self.deque_length_spin.value(),
             'energy_kev':       self._geometry['energy_kev'],
@@ -1338,6 +1816,17 @@ class MainWindow(QMainWindow):
             'probe_name':       (probe_entry or {}).get('name', ''),
             'probe_path':       self._probe_path or '',
         }
+        if method == 'CHAIN':
+            # The chain's common parameters replace the window's. crop_N and
+            # obj_shape already come from it (_current_crop_N/_obj_shape).
+            params.update({
+                'res_mode':    'chain',
+                'obj_init':    chain_common['obj_init'],
+                'n_avg':       chain_common['n_avg'],
+                'chain_steps': chain_steps,
+                'chain_json':  chain_to_json(chain_common, chain_steps),
+            })
+        return params
 
     def snapshot_run_inputs(self):
         """Validate and gather everything a worker needs for one run.
@@ -1363,6 +1852,9 @@ class MainWindow(QMainWindow):
                 )
         elif not self.pv_name_edit.text().strip():
             raise RuntimeError('No EPICS image PV is set on the main panel.')
+        if self._current_method() == 'CHAIN' and self._chain_errors():
+            raise RuntimeError('Fix the custom RPI chain first:\n'
+                               + '\n'.join(self._chain_errors()))
         probe = self.prepare_probe_for_run()
         if probe is None:
             raise RuntimeError('Probe propagation failed — see the message above.')
@@ -1463,13 +1955,11 @@ class MainWindow(QMainWindow):
         else:
             levels = self._frozen_levels
 
-        # With pg.setConfigOptions(imageAxisOrder='row-major'), data[row, col]
-        # maps to (y, x) correctly — no transpose needed.
-        if levels is None:
-            self.image_view.setImage(disp, autoLevels=True, autoRange=False)
-        else:
-            self.image_view.setImage(disp, autoLevels=False, levels=levels,
-                                     autoRange=False)
+        # pg_image_tools works in col-major (image[x, y]) whatever the global
+        # imageAxisOrder, so hand it data[row, col] transposed.
+        self.image_plot.set_image(disp.T, pixel_size_m=self._last_pixel_size_m or 1.0)
+        if levels is not None:
+            self.image_view.setLevels(*levels)
 
         self._last_display_img = img   # un-logged, so the readout stays honest
         self._update_pixel_info()
@@ -1621,10 +2111,11 @@ class MainWindow(QMainWindow):
             geometry     = self._geometry,
             current_path = self._probe_path,
             probe_cache  = self._probe_data_cache,
+            browse_dir   = self.browse_dir('probe'),
             parent       = self,
         )
         apply_font_size_to_tree(dlg, self._current_font_size())
-        dlg.exec_()
+        dlg.exec()
         # Keep any add/delete/rename/change-file/shape/geometry edits,
         # regardless of accept/cancel, and reflect them in the Setup window.
         self._probe_choices = dlg.get_choices()
@@ -1663,7 +2154,7 @@ class MainWindow(QMainWindow):
             )
             if not loaded:
                 item.setForeground(QBrush(QColor('gray')))
-                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             if path == self._probe_path:
                 # Built from the widget's current font so the point size keeps
                 # tracking the font-size spin box (an item font, once set, no
@@ -1772,14 +2263,14 @@ class MainWindow(QMainWindow):
         except Exception:
             _DiagnosticDialog(
                 'Could not import the Object Accumulator module.\n\n'
-                + traceback.format_exc(), self).exec_()
+                + traceback.format_exc(), self).exec()
             return
         try:
             win = ObjectAccumulatorWindow(self)
         except Exception:
             _DiagnosticDialog(
                 'Could not create the Object Accumulator window.\n\n'
-                + traceback.format_exc(), self).exec_()
+                + traceback.format_exc(), self).exec()
             return
         self._accum_win = win
         apply_font_size_to_tree(win, self._current_font_size())
@@ -1837,17 +2328,19 @@ class MainWindow(QMainWindow):
                 img,
                 beam_cy = self._geometry['beam_center_y'],
                 beam_cx = self._geometry['beam_center_x'],
-                crop_N  = self.crop_N_spin.value(),
-                h5_mode = self.h5_check.isChecked(),
+                crop_N  = self._current_crop_N(),
+                # A raw master frame is a full detector image, so the
+                # overlay goes on the beam centre as for a PV image.
+                h5_mode = (self.h5_check.isChecked()
+                           and not getattr(self._worker, 'h5_raw', False)),
             )
 
     def _on_worker_error(self, msg):
         self.start_btn.setText('Start')
-        self.algo_combo.setEnabled(True)
-        self.res_mode_combo.setEnabled(True)
+        self._set_method_controls_enabled(True)
         first_line = msg.split('\n')[0] if msg else 'Worker error'
         self._set_status(f'Error: {first_line}')
-        _DiagnosticDialog(msg, self).exec_()
+        _DiagnosticDialog(msg, self).exec()
 
     # ------------------------------------------------------------------ #
     # Utilities                                                            #
@@ -1933,7 +2426,7 @@ class _PVImageViewer(QDialog):
         super().__init__(parent)
         self.setObjectName('PVImageViewer')
         self.setWindowTitle('Diffraction Pattern')
-        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)
         self.resize(600, 650)
 
         self._last_img    = None
@@ -1945,8 +2438,11 @@ class _PVImageViewer(QDialog):
 
         layout = QVBoxLayout(self)
 
-        self._iv = _named(pg.ImageView(), 'pv_image_view')
-        layout.addWidget(self._iv)
+        self._plot = ImagePlotWidget(keep_points=True)
+        self._plot.action_no_zoom_tracking.setChecked(True)
+        self._plot.action_auto_colorscale.setChecked(False)   # levels set below
+        self._iv = _named(self._plot.image_view, 'pv_image_view')
+        layout.addWidget(self._plot)
 
         # Bottom bar: log checkbox on the left, cursor position on the right
         bottom = QHBoxLayout()
@@ -1959,7 +2455,6 @@ class _PVImageViewer(QDialog):
         layout.addLayout(bottom)
 
         vb = self._iv.getView()
-        vb.menu.addAction('Reset Zoom', vb.autoRange)
 
         # Overlay items added directly to the ViewBox
         self._dot  = pg.ScatterPlotItem(pen=None, brush=pg.mkBrush('r'), size=8)
@@ -1993,8 +2488,9 @@ class _PVImageViewer(QDialog):
             display = np.log10(np.maximum(img, 1.0))
         else:
             display = img
-        auto = self._first_image or reset_levels
-        self._iv.setImage(display, autoLevels=auto, autoRange=self._first_image)
+        self._plot.set_image(display.T, autoRange=True if self._first_image else None)
+        if self._first_image or reset_levels:
+            self._iv.autoLevels()
         self._first_image = False
         self._update_overlays(img.shape)
 
@@ -2051,7 +2547,7 @@ def main():
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == '__main__':
