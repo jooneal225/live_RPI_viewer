@@ -16,7 +16,7 @@ when the probe has 2 modes.
 
 Each step is a plain dict holding only the keys its algorithm uses (see
 STEP_FIELDS). The editor shows it as one table row (COLUMNS); the JSON file
-stores the dicts as they are. Nothing here imports Qt.
+stores the dicts as they are, plus the chain's name. Nothing here imports Qt.
 """
 
 import json
@@ -343,24 +343,28 @@ def recipe_tag(steps):
 
 # ── JSON ────────────────────────────────────────────────────────────────────
 
-def chain_to_dict(common, steps):
-    return {'schema_version': CHAIN_SCHEMA_VERSION,
-            'common': dict(common),
-            'steps': [dict(s) for s in steps]}
+def chain_to_dict(common, steps, name=''):
+    d = {'schema_version': CHAIN_SCHEMA_VERSION}
+    if name:
+        d['name'] = name
+    d['common'] = dict(common)
+    d['steps'] = [dict(s) for s in steps]
+    return d
 
 
-def chain_to_json(common, steps):
-    return json.dumps(chain_to_dict(common, steps))
+def chain_to_json(common, steps, name=''):
+    return json.dumps(chain_to_dict(common, steps, name))
 
 
-def write_chain_json(path, common, steps):
+def write_chain_json(path, common, steps, name=''):
     with open(path, 'w') as f:
-        json.dump(chain_to_dict(common, steps), f, indent=2)
+        json.dump(chain_to_dict(common, steps, name), f, indent=2)
 
 
 def read_chain_json(path):
-    """Read and validate a chain JSON. Returns (common, steps).
+    """Read and validate a chain JSON. Returns (common, steps, name).
 
+    `name` is '' for files written before chains had names.
     Raises ValueError with a message naming the problem, for the GUI to show.
     """
     try:
@@ -393,4 +397,5 @@ def read_chain_json(path):
             steps.append(validate_step(s))
         except ValueError as exc:
             raise ValueError(f'{path}: step {i + 1}: {exc}.')
-    return common, steps
+    name = data.get('name', '')
+    return common, steps, name.strip() if isinstance(name, str) else ''

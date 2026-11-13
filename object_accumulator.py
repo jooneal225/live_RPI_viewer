@@ -72,6 +72,7 @@ from rpi_utils import (
 )
 from rpi_worker import WORKER_CLASSES
 import qds_positions
+from layout_utils import compact_group_boxes
 
 
 _UI_FILE = Path(__file__).parent / 'object_accumulator.ui'
@@ -146,9 +147,13 @@ _DEFAULT_ALIGN_PEAK = 0.30
 # Hard cap on a diagnostic log entry. Longer detail goes to stdout.
 _LOG_MAX_CHARS = 84
 
+# Start is green while idle and Stop red while running, as in the main window.
+_START_BTN_STYLE = 'QPushButton { background-color: #2e9e44; color: white; font-weight: bold; }'
+_STOP_BTN_STYLE  = 'QPushButton { background-color: #c0392b; color: white; font-weight: bold; }'
+
 _RESERVED_LINES = {
     'canvas_info_label':  2,
-    'monitor_label':      7,
+    'monitor_label':      6,
     'accum_cursor_label': 1,
 }
 
@@ -738,6 +743,8 @@ class ObjectAccumulatorWindow(QDialog):
         super().__init__(main_window)
         uic.loadUi(str(_UI_FILE), self)
         self.setObjectName('ObjectAccumulatorWindow')
+        compact_group_boxes(self)
+        self.start_btn.setStyleSheet(_START_BTN_STYLE)
 
         # pg_image_tools viewer (lineout, measure, filters, compare, ... in the
         # right-click menu). self.accum_image_view stays the bare pg.ImageView.
@@ -902,8 +909,13 @@ class ObjectAccumulatorWindow(QDialog):
         super().showEvent(event)
         if not self._sized_splitters:
             self._sized_splitters = True
+            # Controls column as wide as its contents need, so it never
+            # scrolls sideways.
             w = max(self.accum_splitter.width(), 600)
-            self.accum_splitter.setSizes([380, w - 380])
+            left = (self.accum_scroll_contents.minimumSizeHint().width()
+                    + self.accum_scroll.verticalScrollBar().sizeHint().width()
+                    + 2 * self.accum_scroll.frameWidth())
+            self.accum_splitter.setSizes([left, w - left])
             h = max(self.right_splitter.height(), 400)
             self.right_splitter.setSizes([int(h * 0.82), h - int(h * 0.82)])
             self._apply_label_heights()
@@ -1465,33 +1477,20 @@ class ObjectAccumulatorWindow(QDialog):
         lines = [
             f'{"running" if running else "stopped":8s} in {self._n_in}  '
             f'kept {self._n_accepted}',
-            f'skip  loss {self._n_skip_loss}  pos {self._n_skip_pos}  '
-            f'edge {self._n_skip_bounds}  full {self._n_skip_nothing}  '
+            f'skip loss {self._n_skip_loss} pos {self._n_skip_pos} '
+            f'edge {self._n_skip_bounds} full {self._n_skip_nothing} '
             f'err {self._n_errors}',
-            (f'align ok {self._n_align_ok}  rej {self._n_align_rejected}  '
-             f'drop {self._n_skip_align}  thin {self._n_align_nooverlap}'
-             + (f'  ov {100 * self._last_align_overlap:.0f}%'
-                if np.isfinite(self._last_align_overlap) else '')
-             + (f'  peak {self._last_align_peak:.2f}'
-                if self._act_align_gate.isChecked()
-                and np.isfinite(self._last_align_peak) else ''))
-            if self.align_check.isChecked() else 'align off',
             f'loss  {self._last_loss:.4g} / '
             f'{"off" if thresh <= 0 else f"{thresh:.4g}"}',
         ]
-        if self._last_pos_um is not None:
-            x, y = self._last_pos_um
-            px = self._last_pos_px or (0, 0)
-            idx = self._last_pos_idx
-            lines.append(f'pos   {x:+.3f}, {y:+.3f} um  '
-                         f'({px[0]:+.2f}, {px[1]:+.2f}) px'
-                         + (f'  H5 #{idx}' if idx is not None else ''))
-        else:
-            lines.append('pos   —')
         # self._coverage is refreshed by the render thread, never recomputed
         # here — those are full-canvas passes and this runs per frame.
         lines.append(self._coverage)
-        lines.append(self._worker_status)
+        # The worker line ('H5 img i/N | stage: report') would be cut off on
+        # one line, so it is split after its first field.
+        head, sep, rest = self._worker_status.partition(' | ')
+        lines.append(head)
+        lines.append(rest)
 
         n = _RESERVED_LINES['monitor_label']
         lines = [ln[:70] for ln in lines[:n]] + [''] * max(0, n - len(lines))
@@ -1814,6 +1813,7 @@ class ObjectAccumulatorWindow(QDialog):
 
     def _set_running_ui(self, running):
         self.start_btn.setText('Stop' if running else 'Start')
+        self.start_btn.setStyleSheet(_STOP_BTN_STYLE if running else _START_BTN_STYLE)
         # Fixed for the duration of a run
         for w in (self.positions_group, self.canvas_group):
             w.setEnabled(not running)

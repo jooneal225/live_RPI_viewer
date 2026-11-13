@@ -22,6 +22,21 @@
      <property name="childrenCollapsible">
       <bool>true</bool>
      </property>
+     <widget class="QWidget" name="accum_left_pane">
+      <layout class="QVBoxLayout" name="accum_left_layout">
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
      <widget class="QScrollArea" name="accum_scroll">
       <property name="widgetResizable">
        <bool>true</bool>
@@ -64,15 +79,15 @@
         <item>
          <widget class="QGroupBox" name="canvas_group">
           <property name="title">
-           <string>Object canvas (fixed at Start)</string>
+           <string>Canvas (fixed at Start)</string>
           </property>
           <layout class="QVBoxLayout" name="canvas_vl">
            <item>
-            <layout class="QFormLayout" name="canvas_form">
+            <layout class="QGridLayout" name="canvas_form">
              <item row="0" column="0">
               <widget class="QLabel" name="label_size_x">
                <property name="text">
-                <string>X size (µm):</string>
+                <string>X (µm):</string>
                </property>
               </widget>
              </item>
@@ -95,14 +110,14 @@
                </property>
               </widget>
              </item>
-             <item row="1" column="0">
+             <item row="0" column="2">
               <widget class="QLabel" name="label_size_y">
                <property name="text">
-                <string>Y size (µm):</string>
+                <string>Y (µm):</string>
                </property>
               </widget>
              </item>
-             <item row="1" column="1">
+             <item row="0" column="3">
               <widget class="QDoubleSpinBox" name="size_y_um_spin">
                <property name="decimals">
                 <number>2</number>
@@ -121,14 +136,14 @@
                </property>
               </widget>
              </item>
-             <item row="2" column="0">
+             <item row="1" column="0">
               <widget class="QLabel" name="label_first_frame">
                <property name="text">
-                <string>First image at:</string>
+                <string>First at:</string>
                </property>
               </widget>
              </item>
-             <item row="2" column="1">
+             <item row="1" column="1" colspan="3">
               <widget class="QComboBox" name="first_frame_combo">
                <property name="toolTip">
                 <string>Where the first accepted frame is placed. A corner choice insets by half a frame, so that frame sits flush against the canvas edge and the scan grows inward.</string>
@@ -153,22 +168,22 @@
         <item>
          <widget class="QGroupBox" name="frames_group">
           <property name="title">
-           <string>Frame acceptance and preparation</string>
+           <string>Frames</string>
           </property>
           <layout class="QVBoxLayout" name="frames_vl">
            <item>
-            <layout class="QFormLayout" name="frames_form">
+            <layout class="QGridLayout" name="frames_form">
              <item row="0" column="0">
               <widget class="QLabel" name="label_loss_thresh">
                <property name="text">
-                <string>Loss threshold:</string>
+                <string>Max loss:</string>
                </property>
               </widget>
              </item>
              <item row="0" column="1">
               <widget class="QLineEdit" name="loss_thresh_edit">
                <property name="toolTip">
-                <string>Skip any frame whose final reconstruction loss exceeds this. 0 accepts everything.</string>
+                <string>Loss threshold: skip any frame whose final reconstruction loss exceeds this. 0 accepts everything.</string>
                </property>
                <property name="text">
                 <string>0</string>
@@ -182,24 +197,24 @@
                </property>
               </widget>
              </item>
-             <item row="1" column="1">
+             <item row="1" column="1" colspan="3">
               <widget class="QComboBox" name="accum_mode_combo">
                <property name="toolTip">
                 <string>How a new frame combines with what is already on the canvas. Can be changed while a run is in progress.</string>
                </property>
               </widget>
              </item>
-             <item row="2" column="0">
+             <item row="0" column="2">
               <widget class="QLabel" name="label_decay">
                <property name="enabled">
                 <bool>false</bool>
                </property>
                <property name="text">
-                <string>Decay factor:</string>
+                <string>Decay:</string>
                </property>
               </widget>
              </item>
-             <item row="2" column="1">
+             <item row="0" column="3">
               <widget class="QDoubleSpinBox" name="decay_spin">
                <property name="enabled">
                 <bool>false</bool>
@@ -227,73 +242,77 @@
             </layout>
            </item>
            <item>
-            <widget class="QCheckBox" name="unwrap_check">
-             <property name="toolTip">
-              <string>Unwrap each frame's phase inside its illuminated area before stamping.</string>
-             </property>
-             <property name="text">
-              <string>Unwrap phase</string>
-             </property>
-             <property name="checked">
-              <bool>true</bool>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="ramp_check">
-             <property name="toolTip">
-              <string>Remove each frame's linear phase ramp before stamping. Without this, neighbouring tiles rarely line up.</string>
-             </property>
-             <property name="text">
-              <string>Remove phase ramp</string>
-             </property>
-             <property name="checked">
-              <bool>true</bool>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="zero_mean_check">
-             <property name="toolTip">
-              <string>Subtract each frame's mean phase over its illuminated area. Removes the per-frame piston offset that otherwise makes every tile edge visible.</string>
-             </property>
-             <property name="text">
-              <string>Subtract mean over illumination</string>
-             </property>
-             <property name="checked">
-              <bool>true</bool>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="align_check">
-             <property name="toolTip">
-              <string>Phase-correlate each new frame against what is already on the canvas, over the overlapping pixels only, and shift it by the result. Corrections larger than the limit in the Options menu are rejected, so a bad correlation cannot throw a frame across the object. Needs overlap, so the first frame at any fresh spot is placed on its motor position alone.</string>
-             </property>
-             <property name="text">
-              <string>Align positions by phase correlation</string>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="normalize_check">
-             <property name="toolTip">
-              <string>Before stamping, shift each new frame's phase so its mean over the overlap with the existing object (pixels illuminated in the new frame and already populated on the canvas) matches the accumulator's mean there. Removes the piston step between a new tile and its neighbours. Applied after alignment; frames with too little overlap are stamped unchanged.</string>
-             </property>
-             <property name="text">
-              <string>Normalize to accumulator</string>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="recenter_check">
-             <property name="toolTip">
-              <string>When &quot;Refresh object&quot; is pressed, also forget the reference position so the next accepted frame is placed at the anchor again. Off = the canvas keeps its original frame of reference.</string>
-             </property>
-             <property name="text">
-              <string>Re-anchor on refresh</string>
-             </property>
-            </widget>
+            <layout class="QGridLayout" name="frames_checks_grid">
+             <item row="0" column="0">
+              <widget class="QCheckBox" name="unwrap_check">
+               <property name="toolTip">
+                <string>Unwrap each frame's phase inside its illuminated area before stamping.</string>
+               </property>
+               <property name="text">
+                <string>Unwrap phase</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QCheckBox" name="ramp_check">
+               <property name="toolTip">
+                <string>Remove each frame's linear phase ramp before stamping. Without this, neighbouring tiles rarely line up.</string>
+               </property>
+               <property name="text">
+                <string>Remove ramp</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QCheckBox" name="zero_mean_check">
+               <property name="toolTip">
+                <string>Subtract each frame's mean phase over its illuminated area. Removes the per-frame piston offset that otherwise makes every tile edge visible.</string>
+               </property>
+               <property name="text">
+                <string>Zero mean phase</string>
+               </property>
+               <property name="checked">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QCheckBox" name="normalize_check">
+               <property name="toolTip">
+                <string>Before stamping, shift each new frame's phase so its mean over the overlap with the existing object (pixels illuminated in the new frame and already populated on the canvas) matches the accumulator's mean there. Removes the piston step between a new tile and its neighbours. Applied after alignment; frames with too little overlap are stamped unchanged.</string>
+               </property>
+               <property name="text">
+                <string>Normalize to accum.</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QCheckBox" name="align_check">
+               <property name="toolTip">
+                <string>Phase-correlate each new frame against what is already on the canvas, over the overlapping pixels only, and shift it by the result. Corrections larger than the limit in the Options menu are rejected, so a bad correlation cannot throw a frame across the object. Needs overlap, so the first frame at any fresh spot is placed on its motor position alone.</string>
+               </property>
+               <property name="text">
+                <string>Align (phase corr.)</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QCheckBox" name="recenter_check">
+               <property name="toolTip">
+                <string>When &quot;Refresh object&quot; is pressed, also forget the reference position so the next accepted frame is placed at the anchor again. Off = the canvas keeps its original frame of reference.</string>
+               </property>
+               <property name="text">
+                <string>Re-anchor on refr.</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
            </item>
           </layout>
          </widget>
@@ -417,6 +436,23 @@
          </widget>
         </item>
         <item>
+         <spacer name="controlsSpacer">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>0</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+       </item>
+        <item>
          <widget class="QGroupBox" name="monitor_group">
           <property name="title">
            <string>Monitor</string>
@@ -438,21 +474,7 @@
           </layout>
          </widget>
         </item>
-        <item>
-         <spacer name="controlsSpacer">
-          <property name="orientation">
-           <enum>Qt::Vertical</enum>
-          </property>
-          <property name="sizeHint" stdset="0">
-           <size>
-            <width>0</width>
-            <height>40</height>
-           </size>
-          </property>
-         </spacer>
-        </item>
-       </layout>
-      </widget>
+      </layout>
      </widget>
      <widget class="QSplitter" name="right_splitter">
       <property name="orientation">

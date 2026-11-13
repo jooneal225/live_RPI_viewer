@@ -101,7 +101,8 @@ Interactions
 Image
     * Left-click two points -> cross markers, a dashed connecting line, and a
       label with the separation in µm and in pixels. A third click clears them.
-    * Right-click menu: ``Plot Lineout``, ``Auto-reset Zoom`` (re-fit the view on
+    * Right-click menu: ``Copy Image`` (PNG of the image, native resolution,
+      current colormap), ``Plot Lineout``, ``Auto-reset Zoom`` (re-fit the view on
       every new image), ``Open comparison window``, and ``Analyze > Median
       Filter`` / ``Gaussian Filter`` (each prompts for a kernel width). Zooming
       back out is pyqtgraph's own ``View All``.

@@ -188,6 +188,11 @@ class ImagePlotWidget(QtWidgets.QWidget):
         self._menu = self.pg_view.getView().menu
         self._menu_anchor = None
 
+        self._own_add_separator()
+        self.action_copy_image = QtGui.QAction("Copy Image")
+        self.action_copy_image.triggered.connect(self.copy_image_to_clipboard)
+        self._own_add_action(self.action_copy_image)
+
         # Zoom-on-image-change behavior is a three-way switch -- exactly one of
         # these is active at a time (see set_image()) -- set off from the rest
         # of the menu by a separator on each side.
@@ -592,6 +597,30 @@ class ImagePlotWidget(QtWidgets.QWidget):
 
     def _log_checked(self):
         return self._log_checkbox is not None and self._log_checkbox.isChecked()
+
+    def copy_image_to_clipboard(self):
+        """
+        Put the image on the clipboard as a PNG: native pixel resolution, with
+        the current colormap and levels, oriented as on screen. No overlays.
+        """
+        image_item = self.pg_view.getImageItem()
+        if image_item.image is None:
+            return
+        pixmap = image_item.getPixmap()
+        if pixmap is None or pixmap.isNull():
+            return
+        # Row 0 of the rendered image is y = 0, which is at the top of the
+        # view only when the y axis is inverted.
+        view = self.pg_view.getView()
+        image = pixmap.toImage().mirrored(view.xInverted(), not view.yInverted())
+
+        png = QtCore.QBuffer()
+        png.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        image.save(png, "PNG")
+        mime = QtCore.QMimeData()
+        mime.setData("image/png", png.data())
+        mime.setImageData(image)          # for apps that ask for a non-PNG format
+        QtWidgets.QApplication.clipboard().setMimeData(mime)
 
     # ------------------------------------------------------------------
     # zoom

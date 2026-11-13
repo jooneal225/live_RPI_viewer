@@ -1,27 +1,40 @@
 """
 Custom RPI Chain editor — the window behind "Create Custom RPI chain".
 
-Common parameters on top, then a table with one row per step. "+" appends a
-step of the algorithm picked in the combo, prefilled from the RPI Parameters
-window; "−" removes the selected rows. Cells are edited by typing; a cell
-that does not parse turns red and keeps its error in the tooltip, and the
-step keeps its last valid value until it is fixed.
+The top half lists every chain held in memory. Clicking one loads it into the
+editor below, and edits there change that chain directly. The list's buttons
+create, duplicate, delete and reorder chains (dragging also reorders, and
+double-clicking renames). "Save JSON…" asks for a file for each chain in
+turn; "Load JSON…" takes several files at once and adds one chain per file.
 
-The chain lives only in memory: it is empty at every start (the "Custom RPI
-Chain" method stays greyed out until a step is added) and is kept across
-sessions only through Save/Load JSON.
+The editor has the chain's common parameters, then a table with one row per
+step. "+" appends a step of the algorithm picked in the combo, prefilled from
+the RPI Parameters window; "−" removes the selected rows and ▲/▼ move them.
+Cells are edited by typing; a cell that does not parse turns red and keeps
+its error in the tooltip, and the step keeps its last valid value until it
+is fixed.
+
+Chains live only in memory: the list starts with one empty chain at every
+start (the "Custom RPI Chain" method stays greyed out until some chain has a
+step) and is kept across sessions only through Save/Load JSON. The main
+window picks which chain runs, by its id, from the combo under the method.
 
 The step schema, parsing and JSON live in rpi_chain.py.
 """
 
 import copy
+import itertools
+import os
+import re
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton,
-    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QComboBox, QDialog, QFileDialog,
+    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
+    QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QSpinBox,
+    QSplitter, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 from rpi_chain import (
@@ -36,6 +49,8 @@ _INIT_LABELS = ['Random', 'Flat']
 _BAD_BRUSH = QBrush(QColor(220, 60, 60, 110))
 _NA_BRUSH  = QBrush(QColor(128, 128, 128, 50))
 
+_ID_ROLE = Qt.ItemDataRole.UserRole
+
 
 def _named(widget, name):
     """setObjectName and return the widget, so apply_font_size_to_tree
@@ -44,35 +59,115 @@ def _named(widget, name):
     return widget
 
 
+def _small_btn(text, name, tip, style=None):
+    """A QToolButton, which (unlike QPushButton) has no ~80 px minimum width,
+    so rows of these stay narrow. Grows horizontally to fill grid cells."""
+    b = _named(QToolButton(), name)
+    b.setText(text)
+    b.setToolTip(tip)
+    b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    if style:
+        b.setStyleSheet(style)
+    return b
+
+
+_GREEN = 'QToolButton { background-color: #2e9e44; color: white; font-weight: bold; }'
+_RED   = 'QToolButton { background-color: #c0392b; color: white; font-weight: bold; }'
+
+
 class ChainEditor(QDialog):
-    """Non-blocking editor for the custom RPI chain.
+    """Non-blocking editor for the list of custom RPI chains.
 
     common_defaults() -> {n_probe_modes, crop_N, obj_shape, obj_init, n_avg}
-        fills the common fields when the window is built and on Wipe.
+        fills the common fields of each new chain.
     step_params() -> MainWindow._get_current_rpi_params()
         prefills each step added with "+".
+
+    Each chain is {'id', 'name', 'common', 'steps', 'bad'}, where 'bad' is,
+    per step row, {column index: (error, text typed)} for its red cells.
+    Callers address chains by 'id', which survives renames and reordering.
     """
 
-    # Emitted after any change that can affect is_set(), errors() or snapshot().
+    # Emitted after any change that can affect the list of chains, their
+    # names, is_set(), errors() or snapshot().
     chain_changed = pyqtSignal()
 
     def __init__(self, common_defaults, step_params, parent=None):
         super().__init__(parent)
         self.setObjectName('chain_win')
-        self.setWindowTitle('Custom RPI Chain')
+        self.setWindowTitle('Custom RPI Chains')
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)
         self._common_defaults = common_defaults
         self._step_params     = step_params
-        self._steps: list = []   # step dicts, index-aligned with table rows
-        self._bad: list   = []   # per row: {column index: error} for red cells
+        self._chains: list = []
+        self._ids         = itertools.count(1)
+        self._cur         = None    # chain shown in the editor, or None
         self._last_dir    = ''
         self._filling     = False
 
         outer = QVBoxLayout(self)
+        splitter = _named(QSplitter(Qt.Orientation.Vertical), 'chain_splitter')
+        splitter.setChildrenCollapsible(False)
+        outer.addWidget(splitter, 1)
 
-        # ---- Common parameters ----
+        # ---- Chain list ----
+        list_box = _named(QGroupBox('Chains'), 'chain_list_box')
+        lh = QHBoxLayout(list_box)
+        self.chain_list = _named(QListWidget(), 'chain_list')
+        self.chain_list.setToolTip(
+            'Click a chain to edit it below. Double-click to rename, drag to '
+            'reorder. The main window picks which one runs.')
+        self.chain_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.chain_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.chain_list.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.chain_list.setMinimumHeight(60)
+        self.chain_list.currentRowChanged.connect(self._on_chain_selected)
+        self.chain_list.itemChanged.connect(self._on_chain_renamed)
+        self.chain_list.model().rowsMoved.connect(self._on_chains_dragged)
+        lh.addWidget(self.chain_list, 1)
+
+        lb = QGridLayout()
+        lb.setSpacing(3)
+        new_btn  = _small_btn('New', 'chain_new_btn', 'Add an empty chain.')
+        dup_btn  = _small_btn('Copy', 'chain_dup_btn', 'Duplicate the selected chain.')
+        del_btn  = _small_btn('Delete', 'chain_del_btn', 'Delete the selected chain.')
+        up_btn   = _small_btn('▲', 'chain_up_btn', 'Move the selected chain up.')
+        down_btn = _small_btn('▼', 'chain_down_btn', 'Move the selected chain down.')
+        save_btn = _small_btn('Save JSON…', 'chain_save_btn',
+                              'Save every chain in the list, asking for a file '
+                              'for each in turn.')
+        load_btn = _small_btn('Load JSON…', 'chain_load_btn',
+                              'Add one chain per selected JSON file.')
+        new_btn.clicked.connect(self._on_new_chain)
+        dup_btn.clicked.connect(self._on_duplicate_chain)
+        del_btn.clicked.connect(self._on_delete_chain)
+        up_btn.clicked.connect(lambda: self._move_chain(-1))
+        down_btn.clicked.connect(lambda: self._move_chain(+1))
+        save_btn.clicked.connect(self._on_save)
+        load_btn.clicked.connect(self._on_load)
+        lb.addWidget(new_btn, 0, 0)
+        lb.addWidget(dup_btn, 0, 1)
+        lb.addWidget(del_btn, 1, 0)
+        updown = QHBoxLayout()
+        updown.setSpacing(3)
+        updown.addWidget(up_btn)
+        updown.addWidget(down_btn)
+        lb.addLayout(updown, 1, 1)
+        lb.addWidget(save_btn, 2, 0, 1, 2)
+        lb.addWidget(load_btn, 3, 0, 1, 2)
+        lb.setRowStretch(4, 1)
+        lh.addLayout(lb)
+        splitter.addWidget(list_box)
+
+        # ---- Editor for the selected chain ----
+        self.editor = _named(QWidget(), 'chain_editor_pane')
+        ev = QVBoxLayout(self.editor)
+        ev.setContentsMargins(0, 0, 0, 0)
+
         common_box = _named(QGroupBox('Common'), 'chain_common_box')
-        cf = QFormLayout(common_box)
+        cf = QGridLayout(common_box)
         lo, hi = COMMON_RANGES['n_probe_modes']
         self.n_modes_spin = _named(QSpinBox(), 'chain_n_modes_spin')
         self.n_modes_spin.setRange(lo, hi)
@@ -96,127 +191,266 @@ class ChainEditor(QDialog):
             'the previous step ended with.')
         self.n_avg_spin = _named(QSpinBox(), 'chain_n_avg_spin')
         self.n_avg_spin.setRange(*COMMON_RANGES['n_avg'])
-        cf.addRow(_named(QLabel('N probe modes:'), 'label_chain_modes'), self.n_modes_spin)
-        cf.addRow(_named(QLabel('Det crop:'), 'label_chain_crop'), self.crop_spin)
-        cf.addRow(_named(QLabel('Obj shape:'), 'label_chain_obj'), self.obj_shape_spin)
-        cf.addRow(_named(QLabel('Obj init:'), 'label_chain_init'), self.obj_init_combo)
-        cf.addRow(_named(QLabel('Average N patterns:'), 'label_chain_navg'), self.n_avg_spin)
-        outer.addWidget(common_box)
+        # Two label/field columns.
+        for i, (label, name, w) in enumerate((
+                ('Det crop:', 'label_chain_crop', self.crop_spin),
+                ('Obj shape:', 'label_chain_obj', self.obj_shape_spin),
+                ('Probe modes:', 'label_chain_modes', self.n_modes_spin),
+                ('Obj init:', 'label_chain_init', self.obj_init_combo),
+                ('Avg N dp:', 'label_chain_navg', self.n_avg_spin))):
+            r, c = i % 3, 3 * (i // 3)
+            cf.addWidget(_named(QLabel(label), name), r, c)
+            cf.addWidget(w, r, c + 1)
+        cf.setColumnMinimumWidth(2, 12)
+        cf.setColumnStretch(1, 1)
+        cf.setColumnStretch(4, 1)
+        self.n_avg_spin.setToolTip('Average this many diffraction patterns '
+                                   'before each reconstruction.')
+        ev.addWidget(common_box)
         for w in (self.n_modes_spin, self.crop_spin, self.obj_shape_spin, self.n_avg_spin):
             w.valueChanged.connect(self._on_common_changed)
         self.obj_init_combo.currentIndexChanged.connect(self._on_common_changed)
 
-        # ---- Add / remove steps ----
+        # Add / remove / move steps
         add_row = QHBoxLayout()
-        add_row.addWidget(_named(QLabel('Algorithm:'), 'label_chain_algo'))
+        add_row.setSpacing(3)
         self.algo_combo = _named(QComboBox(), 'chain_algo_combo')
         self.algo_combo.addItems([ALGO_LABELS[a] for a in ALGOS])
-        add_row.addWidget(self.algo_combo)
-        self.add_btn = _named(QPushButton('+'), 'chain_add_btn')
-        self.add_btn.setStyleSheet(
-            'QPushButton { background-color: #2e9e44; color: white; font-weight: bold; }')
-        self.add_btn.setToolTip('Add a step of the selected algorithm, with the '
-                                'values from the RPI Parameters window.')
+        self.algo_combo.setToolTip('Algorithm of the step "+" adds.')
+        self.algo_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.algo_combo.setMinimumContentsLength(8)
+        add_row.addWidget(self.algo_combo, 1)
+        self.add_btn = _small_btn('+', 'chain_add_btn',
+                                  'Add a step of the selected algorithm, with the '
+                                  'values from the RPI Parameters window.', _GREEN)
+        self.remove_btn = _small_btn('−', 'chain_remove_btn',
+                                     'Remove the selected steps (the last one if '
+                                     'nothing is selected).', _RED)
+        self.step_up_btn   = _small_btn('▲', 'chain_step_up_btn',
+                                        'Move the selected steps up.')
+        self.step_down_btn = _small_btn('▼', 'chain_step_down_btn',
+                                        'Move the selected steps down.')
         self.add_btn.clicked.connect(self._on_add)
-        self.remove_btn = _named(QPushButton('−'), 'chain_remove_btn')
-        self.remove_btn.setStyleSheet(
-            'QPushButton { background-color: #c0392b; color: white; font-weight: bold; }')
-        self.remove_btn.setToolTip('Remove the selected steps (the last one if '
-                                   'nothing is selected).')
         self.remove_btn.clicked.connect(self._on_remove)
-        add_row.addWidget(self.add_btn)
-        add_row.addWidget(self.remove_btn)
-        add_row.addStretch(1)
-        outer.addLayout(add_row)
+        self.step_up_btn.clicked.connect(lambda: self._move_steps(-1))
+        self.step_down_btn.clicked.connect(lambda: self._move_steps(+1))
+        for b in (self.add_btn, self.remove_btn, self.step_up_btn, self.step_down_btn):
+            b.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            b.setMinimumWidth(28)
+            add_row.addWidget(b)
+        ev.addLayout(add_row)
 
-        # ---- Steps table ----
         self.table = _named(QTableWidget(0, len(COLUMNS)), 'chain_table')
         self.table.setHorizontalHeaderLabels(COLUMN_LABELS)
         for c, key in enumerate(COLUMNS):
             self.table.horizontalHeaderItem(c).setToolTip(COLUMN_TOOLTIPS[key])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(COLUMNS.index('options'), QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
             | QAbstractItemView.EditTrigger.AnyKeyPressed)
+        self.table.setMinimumSize(120, 80)
         self.table.itemChanged.connect(self._on_item_changed)
-        outer.addWidget(self.table, 1)
+        ev.addWidget(self.table, 1)
 
         self.summary_label = _named(QLabel(''), 'chain_summary_label')
         self.summary_label.setWordWrap(True)
-        outer.addWidget(self.summary_label)
+        ev.addWidget(self.summary_label)
+        splitter.addWidget(self.editor)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
-        # ---- File / reset / close ----
-        btn_row = QHBoxLayout()
-        save_btn  = _named(QPushButton('Save JSON…'), 'chain_save_btn')
-        load_btn  = _named(QPushButton('Load JSON…'), 'chain_load_btn')
-        wipe_btn  = _named(QPushButton('Wipe Custom algorithm'), 'chain_wipe_btn')
         close_btn = _named(QPushButton('Close'), 'chain_close_btn')
-        save_btn.clicked.connect(self._on_save)
-        load_btn.clicked.connect(self._on_load)
-        wipe_btn.clicked.connect(self.wipe)
         close_btn.clicked.connect(self.hide)
-        for b in (save_btn, load_btn, wipe_btn, close_btn):
-            btn_row.addWidget(b)
-        outer.addLayout(btn_row)
+        outer.addWidget(close_btn)
 
-        self._set_common(self._common_defaults())
-        self.resize(820, 520)
-        self._update_summary()
+        self._add_chain(self._new_chain(self._unique_name('Chain 1')))
+        self.resize(560, 620)
+        splitter.setSizes([150, 470])
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def is_set(self):
-        """True once the chain has at least one step."""
-        return bool(self._steps)
+    def chains(self):
+        """[(id, name, n_steps), …] in list order."""
+        return [(c['id'], c['name'], len(c['steps'])) for c in self._chains]
 
-    def common(self):
-        return {
-            'n_probe_modes': self.n_modes_spin.value(),
-            'crop_N':        self.crop_spin.value(),
-            'obj_shape':     self.obj_shape_spin.value(),
-            'obj_init':      OBJ_INITS[self.obj_init_combo.currentIndex()],
-            'n_avg':         self.n_avg_spin.value(),
-        }
+    def is_set(self, cid=None):
+        """True if chain `cid` (any chain, if None) has at least one step."""
+        if cid is None:
+            return any(c['steps'] for c in self._chains)
+        c = self._find(cid)
+        return c is not None and bool(c['steps'])
 
-    def snapshot(self):
-        """(common, steps) as independent copies, so a running worker never
-        sees later edits."""
-        return self.common(), copy.deepcopy(self._steps)
+    def name(self, cid):
+        c = self._find(cid)
+        return c['name'] if c else ''
 
-    def errors(self):
-        """Problems that must be fixed before the chain can run or be saved."""
-        if not self._steps:
-            return ['The custom chain has no steps.']
+    def common(self, cid):
+        return dict(self._find(cid)['common'])
+
+    def snapshot(self, cid):
+        """(common, steps) of chain `cid` as independent copies, so a running
+        worker never sees later edits."""
+        c = self._find(cid)
+        return dict(c['common']), copy.deepcopy(c['steps'])
+
+    def errors(self, cid):
+        """Problems that must be fixed before chain `cid` can run or be saved."""
+        c = self._find(cid)
+        if c is None:
+            return ['The selected custom chain no longer exists.']
+        if not c['steps']:
+            return [f'Chain "{c["name"]}" has no steps.']
         errs = []
         try:
-            validate_common(self.common())
+            validate_common(c['common'])
         except ValueError as exc:
             errs.append(f'Common: {exc}')
-        for row, bad in enumerate(self._bad):
-            for col, msg in sorted(bad.items()):
+        for row, bad in enumerate(c['bad']):
+            for col, (msg, _text) in sorted(bad.items()):
                 errs.append(f'Step {row + 1}, {COLUMN_LABELS[col]}: {msg}')
         return errs
 
-    def wipe(self):
-        """Empty the table and reset the common fields to their defaults."""
-        self._steps, self._bad = [], []
-        self.table.setRowCount(0)
-        self._set_common(self._common_defaults())
-        self._changed()
+    def select(self, cid):
+        """Show chain `cid` in the editor."""
+        for row, c in enumerate(self._chains):
+            if c['id'] == cid:
+                self.chain_list.setCurrentRow(row)
+                return
 
     # ------------------------------------------------------------------
-    # Table
+    # Chain list
+    # ------------------------------------------------------------------
+
+    def _find(self, cid):
+        return next((c for c in self._chains if c['id'] == cid), None)
+
+    def _new_chain(self, name, common=None, steps=None):
+        steps = steps or []
+        return {'id': next(self._ids), 'name': name,
+                'common': dict(common) if common else self._common_defaults(),
+                'steps': steps, 'bad': [{} for _ in steps]}
+
+    def _unique_name(self, name, ignore=None):
+        """`name`, or `name (2)`, `name (3)`, … if another chain has it."""
+        taken = {c['name'] for c in self._chains if c is not ignore}
+        if name not in taken:
+            return name
+        base = re.sub(r' \(\d+\)$', '', name)
+        for i in itertools.count(2):
+            cand = f'{base} ({i})'
+            if cand not in taken:
+                return cand
+
+    def _list_item(self, chain):
+        item = QListWidgetItem(chain['name'])
+        item.setData(_ID_ROLE, chain['id'])
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                      | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled)
+        return item
+
+    def _rebuild_list(self, select_id=None):
+        self.chain_list.blockSignals(True)
+        try:
+            self.chain_list.clear()
+            for c in self._chains:
+                self.chain_list.addItem(self._list_item(c))
+        finally:
+            self.chain_list.blockSignals(False)
+        row = next((i for i, c in enumerate(self._chains) if c['id'] == select_id), -1)
+        if row < 0 and self._chains:
+            row = 0
+        self.chain_list.setCurrentRow(row)
+        # setCurrentRow emits nothing when the row number is unchanged.
+        self._on_chain_selected(row)
+
+    def _add_chain(self, chain, at=None):
+        at = len(self._chains) if at is None else at
+        self._chains.insert(at, chain)
+        self._rebuild_list(chain['id'])
+        self._changed()
+
+    def _on_new_chain(self):
+        self._add_chain(self._new_chain(self._unique_name(f'Chain {len(self._chains) + 1}')))
+
+    def _on_duplicate_chain(self):
+        if self._cur is None:
+            return
+        c = self._cur
+        dup = self._new_chain(self._unique_name(c['name']), c['common'],
+                              copy.deepcopy(c['steps']))
+        dup['bad'] = copy.deepcopy(c['bad'])
+        self._add_chain(dup, self._chains.index(c) + 1)
+
+    def _on_delete_chain(self):
+        if self._cur is None:
+            return
+        row = self._chains.index(self._cur)
+        if self._cur['steps'] and QMessageBox.question(
+                self, 'Delete chain',
+                f'Delete chain "{self._cur["name"]}"?') != QMessageBox.StandardButton.Yes:
+            return
+        del self._chains[row]
+        nxt = self._chains[min(row, len(self._chains) - 1)]['id'] if self._chains else None
+        self._rebuild_list(nxt)
+        self._changed()
+
+    def _move_chain(self, delta):
+        if self._cur is None:
+            return
+        row = self._chains.index(self._cur)
+        new = row + delta
+        if not 0 <= new < len(self._chains):
+            return
+        self._chains.insert(new, self._chains.pop(row))
+        self._rebuild_list(self._cur['id'])
+        self._changed()
+
+    def _on_chains_dragged(self, *_):
+        """Reorder self._chains to match the list after a drag."""
+        order = [self.chain_list.item(i).data(_ID_ROLE)
+                 for i in range(self.chain_list.count())]
+        self._chains.sort(key=lambda c: order.index(c['id']))
+        self._changed()
+
+    def _on_chain_renamed(self, item):
+        c = self._find(item.data(_ID_ROLE))
+        if c is None:
+            return
+        name = self._unique_name(item.text().strip() or c['name'], ignore=c)
+        if name != item.text():
+            self.chain_list.blockSignals(True)
+            item.setText(name)
+            self.chain_list.blockSignals(False)
+        if name != c['name']:
+            c['name'] = name
+            self._changed()
+
+    def _on_chain_selected(self, row):
+        self._cur = self._chains[row] if 0 <= row < len(self._chains) else None
+        self.editor.setEnabled(self._cur is not None)
+        c = self._cur
+        self._set_common(c['common'] if c else self._common_defaults())
+        self.table.setRowCount(len(c['steps']) if c else 0)
+        for r in range(self.table.rowCount()):
+            self._fill_row(r)
+        self._update_summary()
+
+    # ------------------------------------------------------------------
+    # Steps table (of the selected chain)
     # ------------------------------------------------------------------
 
     def _fill_row(self, row):
-        """Write step `row` into the table, dropping any red-cell state."""
-        step = self._steps[row]
+        """Write step `row` of the selected chain into the table, with its
+        red cells showing the text that did not parse."""
+        step = self._cur['steps'][row]
+        bad = self._cur['bad'][row]
         self._filling = True
         try:
             for c, key in enumerate(COLUMNS):
@@ -227,6 +461,11 @@ class ChainEditor(QDialog):
                 elif applies(step['algo'], key):
                     flags |= Qt.ItemFlag.ItemIsEditable
                     item.setToolTip(COLUMN_TOOLTIPS[key])
+                    if c in bad:
+                        msg, text = bad[c]
+                        item.setText(text)
+                        item.setBackground(_BAD_BRUSH)
+                        item.setToolTip(f'Invalid: {msg}\n\n{COLUMN_TOOLTIPS[key]}')
                 else:
                     item.setBackground(_NA_BRUSH)
                     item.setForeground(QBrush(QColor(128, 128, 128)))
@@ -238,24 +477,24 @@ class ChainEditor(QDialog):
             self._filling = False
 
     def _on_item_changed(self, item):
-        if self._filling:
+        if self._filling or self._cur is None:
             return
         row, col = item.row(), item.column()
         key = COLUMNS[col]
-        if row >= len(self._steps) or key == 'algo':
+        if row >= len(self._cur['steps']) or key == 'algo':
             return
-        step = self._steps[row]
+        step = self._cur['steps'][row]
         if not applies(step['algo'], key):
             return
         fields, err = parse_cell(step['algo'], key, item.text())
         self._filling = True
         try:
             if err:
-                self._bad[row][col] = err
+                self._cur['bad'][row][col] = (err, item.text())
                 item.setBackground(_BAD_BRUSH)
                 item.setToolTip(f'Invalid: {err}\n\n{COLUMN_TOOLTIPS[key]}')
             else:
-                self._bad[row].pop(col, None)
+                self._cur['bad'][row].pop(col, None)
                 step.update(fields)
                 # Show the normalized value ('w' → 'weights', '1e-5' → both modes).
                 item.setText(format_cell(step, key))
@@ -266,30 +505,68 @@ class ChainEditor(QDialog):
         self._changed()
 
     def _on_add(self):
+        if self._cur is None:
+            return
         algo = ALGOS[self.algo_combo.currentIndex()]
-        self._steps.append(step_from_params(algo, self._step_params()))
-        self._bad.append({})
-        row = len(self._steps) - 1
+        self._cur['steps'].append(step_from_params(algo, self._step_params()))
+        self._cur['bad'].append({})
+        row = len(self._cur['steps']) - 1
         self.table.insertRow(row)
         self._fill_row(row)
         self.table.scrollToItem(self.table.item(row, 0))
         self._changed()
 
+    def _selected_rows(self):
+        return sorted({i.row() for i in self.table.selectedIndexes()})
+
     def _on_remove(self):
-        if not self._steps:
+        if self._cur is None or not self._cur['steps']:
             return
-        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
-        if not rows:
-            rows = [len(self._steps) - 1]
-        for row in rows:
-            del self._steps[row]
-            del self._bad[row]
+        rows = self._selected_rows() or [len(self._cur['steps']) - 1]
+        for row in reversed(rows):
+            del self._cur['steps'][row]
+            del self._cur['bad'][row]
             self.table.removeRow(row)
         self._changed()
 
+    def _move_steps(self, delta):
+        """Move the selected rows one place up (-1) or down (+1); a row stops
+        when it reaches the end or another selected row that has stopped."""
+        c = self._cur
+        rows = self._selected_rows()
+        if c is None or not rows:
+            return
+        n = len(c['steps'])
+        sel = set(rows)
+        for row in (rows if delta < 0 else reversed(rows)):
+            new = row + delta
+            if 0 <= new < n and new not in sel:
+                for lst in (c['steps'], c['bad']):
+                    lst[row], lst[new] = lst[new], lst[row]
+                sel.discard(row)
+                sel.add(new)
+        for r in range(n):
+            self._fill_row(r)
+        self.table.clearSelection()
+        mode = self.table.selectionMode()
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        for r in sorted(sel):
+            self.table.selectRow(r)
+        self.table.setSelectionMode(mode)
+        self._changed()
+
     # ------------------------------------------------------------------
-    # Common parameters
+    # Common parameters (of the selected chain)
     # ------------------------------------------------------------------
+
+    def _read_common(self):
+        return {
+            'n_probe_modes': self.n_modes_spin.value(),
+            'crop_N':        self.crop_spin.value(),
+            'obj_shape':     self.obj_shape_spin.value(),
+            'obj_init':      OBJ_INITS[self.obj_init_combo.currentIndex()],
+            'n_avg':         self.n_avg_spin.value(),
+        }
 
     def _set_common(self, c):
         for w in (self.n_modes_spin, self.crop_spin, self.obj_shape_spin,
@@ -309,6 +586,8 @@ class ChainEditor(QDialog):
                 w.blockSignals(False)
 
     def _on_common_changed(self, *_):
+        if self._cur is not None:
+            self._cur['common'] = self._read_common()
         self._changed()
 
     # ------------------------------------------------------------------
@@ -316,62 +595,99 @@ class ChainEditor(QDialog):
     # ------------------------------------------------------------------
 
     def _on_save(self):
-        errs = self.errors()
-        if errs:
-            QMessageBox.warning(self, 'Cannot save chain',
-                                'Fix these first:\n\n' + '\n'.join(errs))
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, 'Save Custom RPI Chain', self._last_dir, 'JSON files (*.json)')
-        if not path:
-            return
-        if not path.lower().endswith('.json'):
-            path += '.json'
-        common, steps = self.snapshot()
-        try:
-            write_chain_json(path, common, steps)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Save failed', str(exc))
-            return
-        self._last_dir = path
-        self.summary_label.setText(f'Saved to {path}\n' + self._summary_text())
+        """Ask for a file for each chain in turn. A chain with errors is
+        reported and skipped; cancelling a file dialog skips that chain."""
+        saved, skipped = [], []
+        todo = list(self._chains)
+        for i, c in enumerate(todo):
+            more = i < len(todo) - 1
+            errs = self.errors(c['id'])
+            if errs:
+                skipped.append(c['name'])
+                buttons = QMessageBox.StandardButton.Ok
+                if more:
+                    buttons |= QMessageBox.StandardButton.Abort
+                if QMessageBox.warning(
+                        self, 'Cannot save chain',
+                        f'Chain "{c["name"]}" is skipped. Fix these first:\n\n'
+                        + '\n'.join(errs),
+                        buttons) == QMessageBox.StandardButton.Abort:
+                    break
+                continue
+            stem = re.sub(r'[^\w.-]+', '_', c['name']).strip('_') or 'chain'
+            start = os.path.join(os.path.dirname(self._last_dir), f'{stem}.json')
+            path, _ = QFileDialog.getSaveFileName(
+                self, f'Save chain "{c["name"]}" ({i + 1} of {len(todo)})',
+                start, 'JSON files (*.json)')
+            if not path:
+                skipped.append(c['name'])
+                if more and QMessageBox.question(
+                        self, 'Save chains',
+                        f'"{c["name"]}" was not saved. Continue with the next '
+                        f'chain?') != QMessageBox.StandardButton.Yes:
+                    break
+                continue
+            if not path.lower().endswith('.json'):
+                path += '.json'
+            common, steps = self.snapshot(c['id'])
+            try:
+                write_chain_json(path, common, steps, c['name'])
+            except Exception as exc:
+                QMessageBox.warning(self, 'Save failed', f'{c["name"]}: {exc}')
+                skipped.append(c['name'])
+                continue
+            self._last_dir = path
+            saved.append(path)
+        msg = f'Saved {len(saved)} of {len(todo)} chain{"s" if len(todo) != 1 else ""}.'
+        if skipped:
+            msg += f'  Not saved: {", ".join(skipped)}.'
+        self.summary_label.setText(msg + '\n' + self._summary_text())
 
     def _on_load(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, 'Load Custom RPI Chain', self._last_dir,
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, 'Load Custom RPI Chains', self._last_dir,
             'JSON files (*.json);;All files (*)')
-        if not path:
+        if not paths:
             return
-        try:
-            common, steps = read_chain_json(path)
-        except ValueError as exc:
-            QMessageBox.warning(self, 'Load failed', str(exc))
-            return
-        self._last_dir = path
-        self._set_common(common)
-        self._steps = steps
-        self._bad = [{} for _ in steps]
-        self.table.setRowCount(len(steps))
-        for row in range(len(steps)):
-            self._fill_row(row)
-        self._changed()
-        self.summary_label.setText(f'Loaded {path}\n' + self._summary_text())
+        failed, last = [], None
+        for path in paths:
+            try:
+                common, steps, name = read_chain_json(path)
+            except ValueError as exc:
+                failed.append(str(exc))
+                continue
+            name = self._unique_name(name or os.path.splitext(os.path.basename(path))[0])
+            last = self._new_chain(name, common, steps)
+            self._chains.append(last)
+            self._last_dir = path
+        if last is not None:
+            self._rebuild_list(last['id'])
+            self._changed()
+        n_ok = len(paths) - len(failed)
+        self.summary_label.setText(
+            f'Loaded {n_ok} of {len(paths)} file{"s" if len(paths) != 1 else ""}.\n'
+            + self._summary_text())
+        if failed:
+            QMessageBox.warning(self, 'Load failed', '\n\n'.join(failed))
 
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
 
     def _summary_text(self):
-        if not self._steps:
-            return ('No custom chain set — "Custom RPI Chain" stays greyed out '
-                    'in the main window until a step is added.')
-        n_bad = sum(len(b) for b in self._bad)
-        text = (f'{len(self._steps)} step{"s" if len(self._steps) != 1 else ""}, '
-                f'{total_iterations(self._steps)} iterations in total.')
+        c = self._cur
+        if c is None:
+            return 'No chain selected — press "New" or "Load JSON…".'
+        if not c['steps']:
+            return (f'"{c["name"]}" has no steps yet. A chain can be chosen in '
+                    'the main window once it has one.')
+        n_bad = sum(len(b) for b in c['bad'])
+        text = (f'{len(c["steps"])} step{"s" if len(c["steps"]) != 1 else ""}, '
+                f'{total_iterations(c["steps"])} iterations in total.')
         if n_bad:
             text += f'  {n_bad} invalid cell{"s" if n_bad != 1 else ""} (red) — fix before running.'
         try:
-            validate_common(self.common())
+            validate_common(c['common'])
         except ValueError as exc:
             text += f'  Common: {exc}.'
         return text

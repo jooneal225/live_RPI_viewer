@@ -20,500 +20,580 @@
       <property name="orientation">
        <enum>Qt::Horizontal</enum>
       </property>
-      <widget class="QScrollArea" name="scrollArea">
-       <property name="widgetResizable">
-        <bool>true</bool>
-       </property>
-       <widget class="QWidget" name="scrollContents">
-        <property name="geometry">
-         <rect>
-          <x>0</x>
-          <y>0</y>
-          <width>654</width>
-          <height>821</height>
-         </rect>
+      <widget class="QWidget" name="leftPane">
+       <layout class="QVBoxLayout" name="leftPaneLayout">
+        <property name="leftMargin">
+         <number>0</number>
         </property>
-        <layout class="QVBoxLayout" name="leftVLayout">
-         <item>
-          <widget class="QGroupBox" name="paths_group">
-           <property name="title">
-            <string>Paths</string>
+        <property name="topMargin">
+         <number>0</number>
+        </property>
+        <property name="rightMargin">
+         <number>0</number>
+        </property>
+        <property name="bottomMargin">
+         <number>0</number>
+        </property>
+        <item>
+         <widget class="QScrollArea" name="scrollArea">
+          <property name="widgetResizable">
+           <bool>true</bool>
+          </property>
+          <widget class="QWidget" name="scrollContents">
+           <property name="geometry">
+            <rect>
+             <x>0</x>
+             <y>0</y>
+             <width>654</width>
+             <height>821</height>
+            </rect>
            </property>
-           <layout class="QFormLayout" name="paths_form">
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_base_path">
-              <property name="text">
-               <string>Base path:</string>
-              </property>
-              <property name="toolTip">
-               <string>Starting folder for the file browsers only; it never changes a path by itself. Probe: &lt;base&gt;/ptychi_recons/. Save dir and accumulator save: &lt;base&gt;/rpi_recons/rpi_live/ (created if missing). H5 replay: &lt;base&gt;/preproc/, else &lt;base&gt;/ptycho/. Missing folders fall back to the nearest existing parent.</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <layout class="QHBoxLayout" name="base_path_hl">
-              <item>
-               <widget class="QLineEdit" name="base_path_edit">
-                <property name="placeholderText">
-                 <string>/path/to/experiment</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="base_path_browse_btn">
-                <property name="text">
-                 <string>...</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-            <item row="1" column="0">
-             <widget class="QLabel" name="label_probe">
-              <property name="text">
-               <string>Probe file:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <layout class="QHBoxLayout" name="probe_hl">
-              <item>
-               <widget class="QLineEdit" name="probe_file_edit">
-                <property name="placeholderText">
-                 <string>/path/to/probe.h5</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="probe_browse_btn">
-                <property name="text">
-                 <string>...</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-            <item row="2" column="0">
-             <widget class="QLabel" name="label_probe_list">
-              <property name="text">
-               <string>Probes:</string>
-              </property>
-              <property name="alignment">
-               <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QListWidget" name="probe_list_widget">
-              <property name="maximumSize">
-               <size>
-                <width>16777215</width>
-                <height>130</height>
-               </size>
-              </property>
-              <property name="toolTip">
-               <string>Registered probes. Bold = currently in use. Greyed = not loaded from disk yet (use &quot;Setup Initial Probes and Geometry&quot; → &quot;Load registered probes&quot;). Click a loaded probe to switch to it.</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="0">
-             <widget class="QLabel" name="label_mask">
-              <property name="text">
-               <string>Pixel mask file:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="1">
-             <layout class="QHBoxLayout" name="mask_hl">
-              <item>
-               <widget class="QLineEdit" name="pixel_mask_file_edit">
-                <property name="placeholderText">
-                 <string>/path/to/mask.hdf5</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="pixel_mask_browse_btn">
-                <property name="text">
-                 <string>...</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-            <item row="4" column="0">
-             <widget class="QLabel" name="label_pv">
-              <property name="text">
-               <string>EPICS PV:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="4" column="1">
-             <widget class="QLineEdit" name="pv_name_edit">
-              <property name="placeholderText">
-               <string>12IDC:dp:array</string>
-              </property>
-             </widget>
-            </item>
-            <item row="5" column="0">
-             <widget class="QLabel" name="label_savedir">
-              <property name="text">
-               <string>Save dir:</string>
-              </property>
-             </widget>
-            </item>
-            <item row="5" column="1">
-             <layout class="QHBoxLayout" name="savedir_hl">
-              <item>
-               <widget class="QLineEdit" name="save_dir_edit">
-                <property name="placeholderText">
-                 <string>/path/to/rpi_recons</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="save_dir_browse_btn">
-                <property name="text">
-                 <string>...</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-           </layout>
-          </widget>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="h5_group">
-           <property name="title">
-            <string>H5 Replay</string>
-           </property>
-           <layout class="QVBoxLayout" name="h5_vl">
+           <layout class="QVBoxLayout" name="leftVLayout">
+            <property name="spacing">
+             <number>4</number>
+            </property>
             <item>
-             <layout class="QHBoxLayout" name="h5_top_hl">
-              <item>
-               <widget class="QCheckBox" name="h5_check">
-                <property name="text">
-                 <string>Read from H5 file</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QLabel" name="label_h5_start">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="text">
-                 <string>Start index:</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QSpinBox" name="h5_start_spin">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="minimum">
-                 <number>0</number>
-                </property>
-                <property name="maximum">
-                 <number>999999</number>
-                </property>
-                <property name="value">
-                 <number>0</number>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QLabel" name="label_h5_stride">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="text">
-                 <string>Analyze every:</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QSpinBox" name="h5_stride_spin">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="toolTip">
-                 <string>Analyze only every k-th pattern in the file. 1 = every image (default).</string>
-                </property>
-                <property name="prefix">
-                 <string/>
-                </property>
-                <property name="suffix">
-                 <string> th image</string>
-                </property>
-                <property name="minimum">
-                 <number>1</number>
-                </property>
-                <property name="maximum">
-                 <number>9999</number>
-                </property>
-                <property name="value">
-                 <number>1</number>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <spacer name="h5_start_spacer">
-                <property name="orientation">
-                 <enum>Qt::Horizontal</enum>
-                </property>
-                <property name="sizeHint" stdset="0">
-                 <size>
-                  <width>40</width>
-                  <height>0</height>
-                 </size>
-                </property>
-               </spacer>
-              </item>
-             </layout>
-            </item>
-            <item>
-             <layout class="QHBoxLayout" name="h5_hl">
-              <item>
-               <widget class="QLineEdit" name="h5_file_edit">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="placeholderText">
-                 <string>H5 file path…</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="h5_browse_btn">
-                <property name="enabled">
-                 <bool>false</bool>
-                </property>
-                <property name="text">
-                 <string>...</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-           </layout>
-          </widget>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="beamdet_hl">
-           <item>
-            <widget class="QLabel" name="geometry_hint_label">
-             <property name="text">
-              <string>Energy, detector distance and beam centre
-are set in &quot;Setup Initial Probes and Geometry&quot;.</string>
-             </property>
-             <property name="wordWrap">
-              <bool>true</bool>
-             </property>
-            </widget>
-           </item>
-          </layout>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="rpi_saving_hl">
-           <item>
-            <widget class="QGroupBox" name="rpi_group">
-             <property name="title">
-              <string>RPI Parameters</string>
-             </property>
-             <layout class="QVBoxLayout" name="rpi_group_layout">
-              <item>
-               <widget class="QComboBox" name="algo_combo"/>
-              </item>
-              <item>
-               <widget class="QComboBox" name="res_mode_combo">
-                <property name="toolTip">
-                 <string>Selects which of the two stored object shapes is used. Edit both in &quot;Setup parameters…&quot;.</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="setup_params_btn">
-                <property name="text">
-                 <string>Setup parameters…</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="propagate_probe_btn">
-                <property name="toolTip">
-                 <string>Open the probe propagation window. The distance can be changed while a reconstruction is running; the new probe is picked up before the next frame.</string>
-                </property>
-                <property name="text">
-                 <string>Propagate probe…</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
-           <item>
-            <widget class="QGroupBox" name="saving_group">
-             <property name="title">
-              <string>Saving</string>
-             </property>
-             <layout class="QVBoxLayout" name="saving_vl">
-              <item>
-               <layout class="QHBoxLayout" name="deque_hl">
-                <item>
-                 <widget class="QLabel" name="label_deque">
-                  <property name="text">
-                   <string>Deque length:</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QSpinBox" name="deque_length_spin">
-                  <property name="minimum">
-                   <number>1</number>
-                  </property>
-                  <property name="maximum">
-                   <number>20</number>
-                  </property>
-                  <property name="value">
-                   <number>3</number>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <spacer name="deque_spacer">
-                  <property name="orientation">
-                   <enum>Qt::Horizontal</enum>
-                  </property>
-                  <property name="sizeHint" stdset="0">
-                   <size>
-                    <width>40</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                 </spacer>
-                </item>
-               </layout>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="save_entry_hl">
-                <item>
-                 <widget class="QPushButton" name="save_btn">
-                  <property name="text">
-                   <string>Save</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QLabel" name="label_saveentry">
-                  <property name="text">
-                   <string>Entry (0 = newest):</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QSpinBox" name="save_entry_spin">
-                  <property name="maximum">
+             <widget class="QGroupBox" name="paths_group">
+              <property name="title">
+               <string>Paths</string>
+              </property>
+              <layout class="QFormLayout" name="paths_form">
+               <item row="0" column="0">
+                <widget class="QLabel" name="label_base_path">
+                 <property name="text">
+                  <string>Base path:</string>
+                 </property>
+                 <property name="toolTip">
+                  <string>Starting folder for the file browsers only; it never changes a path by itself. Probe: &lt;base&gt;/ptychi_recons/. Save dir and accumulator save: &lt;base&gt;/rpi_recons/rpi_live/ (created if missing). H5 replay: &lt;base&gt;/preproc/, else &lt;base&gt;/ptycho/. Missing folders fall back to the nearest existing parent.</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <layout class="QHBoxLayout" name="base_path_hl">
+                 <item>
+                  <widget class="QLineEdit" name="base_path_edit">
+                   <property name="placeholderText">
+                    <string>/path/to/experiment</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="base_path_browse_btn">
+                   <property name="text">
+                    <string>...</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item row="1" column="0">
+                <widget class="QLabel" name="label_probe_list">
+                 <property name="text">
+                  <string>Probes:</string>
+                 </property>
+                 <property name="alignment">
+                  <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QListWidget" name="probe_list_widget">
+                 <property name="maximumSize">
+                  <size>
+                   <width>16777215</width>
+                   <height>76</height>
+                  </size>
+                 </property>
+                 <property name="toolTip">
+                  <string>Registered probes. Bold = currently in use. Greyed = not loaded from disk yet (use "Probes &amp; Geometry…" → "Load registered probes"). Click a loaded probe to switch to it.</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="0">
+                <widget class="QLabel" name="label_pv">
+                 <property name="text">
+                  <string>EPICS PV:</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="1">
+                <layout class="QHBoxLayout" name="pv_hl"><item><widget class="QLineEdit" name="pv_name_edit">
+                 <property name="placeholderText">
+                  <string>12IDC:dp:array</string>
+                 </property>
+                </widget></item><item><widget class="QPushButton" name="setup_paths_btn">
+                 <property name="text">
+                  <string>Setup Paths…</string>
+                 </property>
+                 <property name="toolTip">
+                  <string>Probe file, pixel mask file and save directory.</string>
+                 </property>
+                </widget></item></layout>
+               </item>
+               <item row="3" column="0" colspan="2">
+                <widget class="QWidget" name="paths_more_widget">
+                 <layout class="QFormLayout" name="paths_more_form">
+                  <property name="leftMargin">
                    <number>0</number>
                   </property>
-                 </widget>
-                </item>
-               </layout>
-              </item>
-              <item>
-               <widget class="QCheckBox" name="autosave_check">
-                <property name="text">
-                 <string>Auto-save each frame to H5</string>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
-          </layout>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="display_group">
-           <property name="title">
-            <string>Display</string>
-           </property>
-           <layout class="QGridLayout" name="display_grid">
-            <item row="0" column="0">
-             <widget class="QCheckBox" name="unwrap_check">
-              <property name="toolTip">
-               <string>Unwrap the phase inside the illuminated area only; pixels outside are left untouched.</string>
-              </property>
-              <property name="text">
-               <string>Unwrap phase</string>
-              </property>
+                  <property name="topMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="rightMargin">
+                   <number>0</number>
+                  </property>
+                  <property name="bottomMargin">
+                   <number>0</number>
+                  </property>
+                  <item row="0" column="0">
+                   <widget class="QLabel" name="label_probe">
+                    <property name="text">
+                     <string>Probe file:</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="1">
+                   <layout class="QHBoxLayout" name="probe_hl">
+                    <item>
+                     <widget class="QLineEdit" name="probe_file_edit">
+                      <property name="placeholderText">
+                       <string>/path/to/probe.h5</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item>
+                     <widget class="QPushButton" name="probe_browse_btn">
+                      <property name="text">
+                       <string>...</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                  <item row="1" column="0">
+                   <widget class="QLabel" name="label_mask">
+                    <property name="text">
+                     <string>Pixel mask file:</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="1">
+                   <layout class="QHBoxLayout" name="mask_hl">
+                    <item>
+                     <widget class="QLineEdit" name="pixel_mask_file_edit">
+                      <property name="placeholderText">
+                       <string>/path/to/mask.hdf5</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item>
+                     <widget class="QPushButton" name="pixel_mask_browse_btn">
+                      <property name="text">
+                       <string>...</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                  <item row="2" column="0">
+                   <widget class="QLabel" name="label_savedir">
+                    <property name="text">
+                     <string>Save dir:</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="1">
+                   <layout class="QHBoxLayout" name="savedir_hl">
+                    <item>
+                     <widget class="QLineEdit" name="save_dir_edit">
+                      <property name="placeholderText">
+                       <string>/path/to/rpi_recons</string>
+                      </property>
+                     </widget>
+                    </item>
+                    <item>
+                     <widget class="QPushButton" name="save_dir_browse_btn">
+                      <property name="text">
+                       <string>...</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+              </layout>
              </widget>
             </item>
-            <item row="0" column="1">
-             <widget class="QCheckBox" name="ramp_check">
-              <property name="toolTip">
-               <string>Fit and subtract a linear phase ramp using only the illuminated area; pixels outside are left untouched.</string>
+            <item>
+             <widget class="QGroupBox" name="h5_group">
+              <property name="title">
+               <string>H5 Replay</string>
               </property>
-              <property name="text">
-               <string>Remove phase ramp</string>
-              </property>
+              <layout class="QVBoxLayout" name="h5_vl">
+               <item>
+                <layout class="QHBoxLayout" name="h5_hl">
+                 <item>
+                  <widget class="QCheckBox" name="h5_check">
+                   <property name="text">
+                    <string>Read H5</string>
+                   </property>
+                   <property name="toolTip">
+                    <string>Replay diffraction patterns from an H5 file instead of the EPICS PV.</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLineEdit" name="h5_file_edit">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="placeholderText">
+                    <string>H5 file path…</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="h5_browse_btn">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="text">
+                    <string>...</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="h5_top_hl">
+                 <item>
+                  <widget class="QLabel" name="label_h5_start">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="text">
+                    <string>Start idx:</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QSpinBox" name="h5_start_spin">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="minimum">
+                    <number>0</number>
+                   </property>
+                   <property name="maximum">
+                    <number>999999</number>
+                   </property>
+                   <property name="value">
+                    <number>0</number>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="label_h5_stride">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="text">
+                    <string>Every:</string>
+                   </property>
+                   <property name="toolTip">
+                    <string>Analyze only every k-th pattern in the file. 1 = every image (default).</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QSpinBox" name="h5_stride_spin">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="toolTip">
+                    <string>Analyze only every k-th pattern in the file. 1 = every image (default).</string>
+                   </property>
+                   <property name="suffix">
+                    <string> th img</string>
+                   </property>
+                   <property name="minimum">
+                    <number>1</number>
+                   </property>
+                   <property name="maximum">
+                    <number>9999</number>
+                   </property>
+                   <property name="value">
+                    <number>1</number>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <spacer name="h5_start_spacer">
+                   <property name="orientation">
+                    <enum>Qt::Horizontal</enum>
+                   </property>
+                   <property name="sizeHint" stdset="0">
+                    <size>
+                     <width>0</width>
+                     <height>0</height>
+                    </size>
+                   </property>
+                  </spacer>
+                 </item>
+                </layout>
+               </item>
+              </layout>
              </widget>
             </item>
-            <item row="0" column="2">
-             <widget class="QCheckBox" name="abs_check">
-              <property name="toolTip">
-               <string>Display np.abs(obj) instead of np.angle(obj).</string>
+            <item>
+             <widget class="QGroupBox" name="rpi_group">
+              <property name="title">
+               <string>RPI Parameters</string>
               </property>
-              <property name="text">
-               <string>Show |obj| instead of phase</string>
-              </property>
+              <layout class="QGridLayout" name="rpi_group_layout">
+               <item row="0" column="0" colspan="2">
+                <widget class="QComboBox" name="algo_combo"/>
+               </item>
+               <item row="1" column="0" colspan="2">
+                <widget class="QComboBox" name="res_mode_combo">
+                 <property name="toolTip">
+                  <string>Selects which of the two stored object shapes is used. Edit both in "Setup parameters…".</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="0">
+                <widget class="QPushButton" name="setup_params_btn">
+                 <property name="text">
+                  <string>Setup parameters…</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="1">
+                <widget class="QPushButton" name="propagate_probe_btn">
+                 <property name="toolTip">
+                  <string>Open the probe propagation window. The distance can be changed while a reconstruction is running; the new probe is picked up before the next frame.</string>
+                 </property>
+                 <property name="text">
+                  <string>Propagate probe…</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
              </widget>
             </item>
-            <item row="1" column="0">
-             <widget class="QCheckBox" name="zoom_illum_check">
-              <property name="toolTip">
-               <string>Keep the view zoomed to the illuminated area of the active probe. Unchecking resets to the full object once, then leaves the view alone.</string>
+            <item>
+             <widget class="QGroupBox" name="saving_group">
+              <property name="title">
+               <string>Saving</string>
               </property>
-              <property name="text">
-               <string>Zoom on illuminated area</string>
-              </property>
+              <layout class="QGridLayout" name="saving_vl">
+               <property name="verticalSpacing">
+                <number>4</number>
+               </property>
+               <item row="0" column="0">
+                <widget class="QLabel" name="label_deque">
+                 <property name="text">
+                  <string>Deque:</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <widget class="QSpinBox" name="deque_length_spin">
+                 <property name="minimum">
+                  <number>1</number>
+                 </property>
+                 <property name="maximum">
+                  <number>20</number>
+                 </property>
+                 <property name="value">
+                  <number>3</number>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="2">
+                <spacer name="deque_spacer">
+                 <property name="orientation">
+                  <enum>Qt::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>0</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+               <item row="0" column="3">
+                <widget class="QPushButton" name="save_btn">
+                 <property name="text">
+                  <string>Save</string>
+                 </property>
+                 <property name="toolTip">
+                  <string>Save the deque entry chosen on the right.</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="4">
+                <widget class="QLabel" name="label_saveentry">
+                 <property name="text">
+                  <string>Entry:</string>
+                 </property>
+                 <property name="toolTip">
+                  <string>Deque entry to save; 0 = newest.</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="5">
+                <widget class="QSpinBox" name="save_entry_spin">
+                 <property name="maximum">
+                  <number>0</number>
+                 </property>
+                 <property name="toolTip">
+                  <string>Deque entry to save; 0 = newest.</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="0" colspan="6">
+                <widget class="QCheckBox" name="autosave_check">
+                 <property name="text">
+                  <string>Auto-save each frame to H5</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
              </widget>
             </item>
-            <item row="1" column="1">
-             <widget class="QCheckBox" name="autolevel_check">
-              <property name="toolTip">
-               <string>Rescale the colour map to each new frame. Unchecking freezes the levels at their current values.</string>
+            <item>
+             <widget class="QGroupBox" name="display_group">
+              <property name="title">
+               <string>Display</string>
               </property>
-              <property name="text">
-               <string>Auto colorscale</string>
-              </property>
-              <property name="checked">
-               <bool>true</bool>
-              </property>
+              <layout class="QGridLayout" name="display_grid">
+               <property name="verticalSpacing">
+                <number>4</number>
+               </property>
+               <item row="0" column="0">
+                <widget class="QCheckBox" name="unwrap_check">
+                 <property name="toolTip">
+                  <string>Unwrap the phase inside the illuminated area only; pixels outside are left untouched.</string>
+                 </property>
+                 <property name="text">
+                  <string>Unwrap phase</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <widget class="QCheckBox" name="abs_check">
+                 <property name="toolTip">
+                  <string>Display np.abs(obj) instead of np.angle(obj).</string>
+                 </property>
+                 <property name="text">
+                  <string>Show |obj|</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QCheckBox" name="ramp_check">
+                 <property name="toolTip">
+                  <string>Fit and subtract a linear phase ramp using only the illuminated area; pixels outside are left untouched.</string>
+                 </property>
+                 <property name="text">
+                  <string>Remove phase ramp</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QCheckBox" name="log_check">
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="toolTip">
+                  <string>log10 colour scale. Only meaningful for |obj| — np.angle() is signed, so this is disabled in phase mode.</string>
+                 </property>
+                 <property name="text">
+                  <string>Log colorscale</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
              </widget>
             </item>
-            <item row="1" column="2">
-             <widget class="QCheckBox" name="log_check">
-              <property name="enabled">
-               <bool>false</bool>
+            <item>
+             <widget class="QGroupBox" name="control_group">
+              <property name="title">
+               <string>Control</string>
               </property>
-              <property name="toolTip">
-               <string>log10 colour scale. Only meaningful for |obj| — np.angle() is signed, so this is disabled in phase mode.</string>
-              </property>
-              <property name="text">
-               <string>Log colorscale</string>
-              </property>
+              <layout class="QGridLayout" name="control_grid">
+               <item row="0" column="0">
+                <widget class="QPushButton" name="start_btn">
+                 <property name="text">
+                  <string>Start</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <widget class="QCheckBox" name="allow_repeat_check">
+                 <property name="toolTip">
+                  <string>When off (default), a diffraction pattern with the same detector frame ID as the last one is not re-analyzed -- the loop just waits for the next frame. When on, every polled frame is analyzed even if it repeats.</string>
+                 </property>
+                 <property name="text">
+                  <string>Re-analyze repeats</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QPushButton" name="view_deque_btn">
+                 <property name="toolTip">
+                  <string>Show every frame in the deque as a grid in the main view, oldest (0) top-left to newest bottom-right.</string>
+                 </property>
+                 <property name="text">
+                  <string>View Deque</string>
+                 </property>
+                 <property name="checkable">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QPushButton" name="view_pv_btn">
+                 <property name="text">
+                  <string>View Diff. Pattern</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="0">
+                <widget class="QPushButton" name="change_probe_btn">
+                 <property name="text">
+                  <string>Probes &amp;&amp; Geometry…</string>
+                 </property>
+                 <property name="toolTip">
+                  <string>Probe library, beamline energy, detector distance and beam centre.</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="2" column="1">
+                <widget class="QPushButton" name="accumulate_btn">
+                 <property name="toolTip">
+                  <string>Open the Object Accumulator: read stage positions alongside each frame and stitch the reconstructions into one large object.</string>
+                 </property>
+                 <property name="text">
+                  <string>Obj. Accumulator…</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
              </widget>
             </item>
-            <item row="0" column="3" rowspan="2">
-             <spacer name="display_spacer">
+            <item>
+             <spacer name="leftSpacer">
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Vertical</enum>
               </property>
               <property name="sizeHint" stdset="0">
                <size>
-                <width>40</width>
+                <width>0</width>
                 <height>0</height>
                </size>
               </property>
@@ -521,144 +601,71 @@ are set in &quot;Setup Initial Probes and Geometry&quot;.</string>
             </item>
            </layout>
           </widget>
-         </item>
-         <item>
-          <widget class="QGroupBox" name="control_group">
-           <property name="title">
-            <string>Control</string>
-           </property>
-           <layout class="QGridLayout" name="control_grid">
-            <item row="0" column="0">
-             <widget class="QPushButton" name="start_btn">
-              <property name="text">
-               <string>Start</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QPushButton" name="change_probe_btn">
-              <property name="text">
-               <string>Setup Initial Probes and Geometry</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QPushButton" name="view_pv_btn">
-              <property name="text">
-               <string>View Diffraction Pattern</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QPushButton" name="view_deque_btn">
-              <property name="toolTip">
-               <string>Show every frame in the deque as a grid in the main view, oldest (0) top-left to newest bottom-right.</string>
-              </property>
-              <property name="text">
-               <string>View Deque</string>
-              </property>
-              <property name="checkable">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="0" colspan="2">
-             <widget class="QCheckBox" name="allow_repeat_check">
-              <property name="toolTip">
-               <string>When off (default), a diffraction pattern with the same detector frame ID as the last one is not re-analyzed -- the loop just waits for the next frame. When on, every polled frame is analyzed even if it repeats.</string>
-              </property>
-              <property name="text">
-               <string>Allow re-analyzing repeated frames</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="0" colspan="2">
-             <widget class="QPushButton" name="accumulate_btn">
-              <property name="toolTip">
-               <string>Open the Object Accumulator: read stage positions alongside each frame and stitch the reconstructions into one large object.</string>
-              </property>
-              <property name="text">
-               <string>Object Accumulator…</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </widget>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="bottom_hl">
-           <item>
-            <widget class="QLabel" name="label_font_size">
-             <property name="text">
-              <string>Font size:</string>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QSpinBox" name="spinBox_fontSize">
-             <property name="toolTip">
-              <string>Point size for every window in this application.</string>
-             </property>
-             <property name="minimum">
-              <number>6</number>
-             </property>
-             <property name="maximum">
-              <number>24</number>
-             </property>
-             <property name="value">
-              <number>11</number>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <spacer name="bottom_spacer">
-             <property name="orientation">
-              <enum>Qt::Horizontal</enum>
-             </property>
-             <property name="sizeHint" stdset="0">
-              <size>
-               <width>40</width>
-               <height>0</height>
-              </size>
-             </property>
-            </spacer>
-           </item>
-           <item>
-            <widget class="QPushButton" name="exit_btn">
-             <property name="minimumSize">
-              <size>
-               <width>160</width>
-               <height>46</height>
-              </size>
-             </property>
-             <property name="toolTip">
-              <string>Save settings and quit. You will be offered the chance to export the current configuration to JSON.</string>
-             </property>
-             <property name="styleSheet">
-              <string notr="true">color: white; background-color: #c0392b; font-weight: bold;</string>
-             </property>
-             <property name="text">
-              <string>EXIT</string>
-             </property>
-            </widget>
-           </item>
-          </layout>
-         </item>
-         <item>
-          <spacer name="leftSpacer">
-           <property name="orientation">
-            <enum>Qt::Vertical</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>0</width>
-             <height>40</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-        </layout>
-       </widget>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="bottom_hl">
+          <property name="leftMargin">
+           <number>6</number>
+          </property>
+          <item>
+           <widget class="QLabel" name="label_font_size">
+            <property name="text">
+             <string>Font size:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QSpinBox" name="spinBox_fontSize">
+            <property name="toolTip">
+             <string>Point size for every window in this application.</string>
+            </property>
+            <property name="minimum">
+             <number>6</number>
+            </property>
+            <property name="maximum">
+             <number>24</number>
+            </property>
+            <property name="value">
+             <number>11</number>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="bottom_spacer">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>0</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QPushButton" name="exit_btn">
+            <property name="minimumSize">
+             <size>
+              <width>90</width>
+              <height>40</height>
+             </size>
+            </property>
+            <property name="toolTip">
+             <string>Save settings and quit. You will be offered the chance to export the current configuration to JSON.</string>
+            </property>
+            <property name="styleSheet">
+             <string notr="true">color: white; background-color: #c0392b; font-weight: bold;</string>
+            </property>
+            <property name="text">
+             <string>EXIT</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
       </widget>
       <widget class="QWidget" name="rightPane">
        <layout class="QVBoxLayout" name="rightVLayout">
