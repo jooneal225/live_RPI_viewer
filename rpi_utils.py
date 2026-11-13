@@ -4,7 +4,6 @@ Utility functions for RPI Live: dataset construction, probe loading, saving.
 
 import bisect
 import os
-import sys
 import csv
 import json
 import re
@@ -21,14 +20,7 @@ except ImportError:
 from skimage.restoration import unwrap_phase
 
 from rpi_chain import recipe_tag
-
-# Optional: complex-aware interpolation from beamline library
-try:
-    sys.path.insert(0, '/home/beams/ONEAL/code/Libraries/misc')
-    from interp_complex import interp_complex_nd
-    _HAS_INTERP_COMPLEX = True
-except ImportError:
-    _HAS_INTERP_COMPLEX = False
+from interp_complex import interp_complex_nd
 
 
 # ---------------------------------------------------------------------------
@@ -69,17 +61,7 @@ def interp_probe(probe, target_N):
     if N == target_N:
         return modes.copy()
 
-    if _HAS_INTERP_COMPLEX:
-        return interp_complex_nd(modes, (target_N, target_N))
-
-    # Fallback: scipy zoom on real/imag separately
-    from scipy.ndimage import zoom
-    factor = target_N / N
-    result = np.stack([
-        zoom(modes[i].real, factor) + 1j * zoom(modes[i].imag, factor)
-        for i in range(modes.shape[0])
-    ])
-    return result
+    return interp_complex_nd(modes, (target_N, target_N))
 
 
 # ---------------------------------------------------------------------------

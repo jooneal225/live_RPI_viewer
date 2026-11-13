@@ -10,3 +10,5 @@ torch
 cdtools-py
 ptychi>=2.4.0
 pvapy
+hdf5plugin
+pyzmq
